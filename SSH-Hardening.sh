@@ -81,6 +81,7 @@ print_header() {
     echo ""
     box_top
     box_title "SSH 管理工具"
+    box_line "  银趴火山帮" "  ${DIM}银趴火山帮${NC}"
     box_sep
     box_title "$1"
     box_bot
@@ -447,6 +448,7 @@ main_menu() {
         echo ""
         box_top
         box_title "SSH 管理工具"
+        box_line "  银趴火山帮" "  ${DIM}银趴火山帮${NC}"
         box_sep
         box_line "  端口 ${CUR_PORT:-22}  |  公钥数 ${KEYCOUNT}" \
                  "  端口 ${BOLD}${CUR_PORT:-22}${NC}  |  公钥数 ${BOLD}${KEYCOUNT}${NC}"
