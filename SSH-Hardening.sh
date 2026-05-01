@@ -359,6 +359,7 @@ set_login_mode() {
         1)
             local KEYCOUNT
             KEYCOUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null || echo 0)
+        local F2B_STAT; F2B_STAT=$(f2b_status)
             if [ "$KEYCOUNT" -eq 0 ]; then
                 warn "当前没有公钥！启用仅密钥登录后将无法通过密码登录！"
                 read -rp "  仍要继续？(yes/no): " FORCE
@@ -433,6 +434,252 @@ change_port() {
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
 }
 
+
+# ══════════════════════════════════════════════════════════
+#  Fail2ban 模块
+# ══════════════════════════════════════════════════════════
+
+# 检测 fail2ban 是否已安装并运行
+f2b_status() {
+    if ! command -v fail2ban-client &>/dev/null; then
+        echo "not_installed"
+    elif systemctl is-active --quiet fail2ban 2>/dev/null; then
+        echo "running"
+    else
+        echo "stopped"
+    fi
+}
+
+# 安装 fail2ban
+f2b_install() {
+    print_header "安装 Fail2ban"
+    info "正在更新软件包列表..."
+    apt-get update -qq 2>/dev/null || yum makecache -q 2>/dev/null || true
+
+    info "正在安装 fail2ban..."
+    if apt-get install -y fail2ban 2>/dev/null || yum install -y fail2ban 2>/dev/null; then
+        # 创建基础 jail.local（如果不存在）
+        if [ ! -f /etc/fail2ban/jail.local ]; then
+            cat > /etc/fail2ban/jail.local << 'JAILEOF'
+[DEFAULT]
+bantime  = 3600
+findtime = 600
+maxretry = 5
+backend  = auto
+
+[sshd]
+enabled  = true
+port     = ssh
+logpath  = %(sshd_log)s
+JAILEOF
+            info "已创建默认配置 /etc/fail2ban/jail.local"
+        fi
+        systemctl enable fail2ban --quiet 2>/dev/null
+        systemctl start fail2ban 2>/dev/null
+        info "Fail2ban 安装并启动成功 ✓"
+    else
+        error "安装失败，请检查网络或手动安装：apt install fail2ban"
+    fi
+}
+
+# ── Fail2ban 主菜单 ───────────────────────────────────────
+fail2ban_menu() {
+    while true; do
+        # 获取状态
+        local F2B_ST; F2B_ST=$(f2b_status)
+
+        # 若未安装，提示安装
+        if [ "$F2B_ST" = "not_installed" ]; then
+            print_header "Fail2ban 管理"
+            warn "检测到 Fail2ban 未安装！"
+            echo ""
+            echo -e "  ${GREEN}1${NC}) 立即安装 Fail2ban"
+            echo -e "  ${RED}0${NC}) 返回主菜单"
+            echo ""
+            read -rp "  请选择 [0-1]: " CHOICE
+            case "$CHOICE" in
+                1) f2b_install ;;
+                0) return ;;
+                *) warn "无效选项"; sleep 1 ;;
+            esac
+            echo ""; read -rp "  按 Enter 继续..." _
+            continue
+        fi
+
+        # 已安装 — 收集数据
+        local F2B_COLOR BANNED_COUNT TOTAL_FAIL JAIL_NAME
+        [ "$F2B_ST" = "running" ] && F2B_COLOR="$GREEN" || F2B_COLOR="$RED"
+
+        # 自动找 SSH jail 名称（sshd / ssh）
+        JAIL_NAME=$(fail2ban-client status 2>/dev/null | grep -oE 'sshd?'| head -1)
+        JAIL_NAME="${JAIL_NAME:-sshd}"
+
+        if [ "$F2B_ST" = "running" ]; then
+            BANNED_COUNT=$(fail2ban-client status "$JAIL_NAME" 2>/dev/null                 | grep "Currently banned" | awk -F: '"'"'{gsub(/ /,"",$2); print $2}'"'"' || echo 0)
+            TOTAL_FAIL=$(fail2ban-client status "$JAIL_NAME" 2>/dev/null                 | grep "Total failed" | awk -F: '"'"'{gsub(/ /,"",$2); print $2}'"'"' || echo 0)
+        else
+            BANNED_COUNT="-"; TOTAL_FAIL="-"
+        fi
+
+        clear
+        echo ""
+        box_top
+        box_title "SSH 管理工具"
+        box_line "  银趴火山帮" "  ${DIM}银趴火山帮${NC}"
+        box_sep
+        box_title "Fail2ban 管理"
+        box_sep
+        box_line "  服务状态: ${F2B_ST}"                  "  服务状态: ${F2B_COLOR}${BOLD}${F2B_ST}${NC}"
+        box_line "  SSH jail: ${JAIL_NAME}  封禁: ${BANNED_COUNT}  失败: ${TOTAL_FAIL}"                  "  SSH jail: ${BOLD}${JAIL_NAME}${NC}  封禁: ${RED}${BOLD}${BANNED_COUNT}${NC}  失败: ${YELLOW}${BOLD}${TOTAL_FAIL}${NC}"
+        box_sep
+        box_line "  1) 查看封禁 IP 列表" "  ${GREEN}1${NC}) 查看封禁 IP 列表"
+        box_line "  2) 手动解封 IP"      "  ${GREEN}2${NC}) 手动解封 IP"
+        box_line "  3) 实时日志"         "  ${GREEN}3${NC}) 实时日志"
+        if [ "$F2B_ST" = "running" ]; then
+            box_line "  4) 停止服务"     "  ${YELLOW}4${NC}) 停止服务"
+        else
+            box_line "  4) 启动服务"     "  ${GREEN}4${NC}) 启动服务"
+        fi
+        box_line "  0) 返回主菜单"       "  ${RED}0${NC}) 返回主菜单"
+        box_bot
+        echo ""
+        read -rp "  请选择 [0-4]: " CHOICE
+
+        case "$CHOICE" in
+            1) f2b_banned_list "$JAIL_NAME" ;;
+            2) f2b_unban "$JAIL_NAME" ;;
+            3) f2b_logs ;;
+            4)
+                if [ "$F2B_ST" = "running" ]; then
+                    systemctl stop fail2ban && info "Fail2ban 已停止" || error "停止失败"
+                else
+                    systemctl start fail2ban && info "Fail2ban 已启动" || error "启动失败"
+                fi
+                sleep 1; continue
+                ;;
+            0) return ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+
+        echo ""; read -rp "  按 Enter 返回..." _
+    done
+}
+
+# ── 查看封禁 IP 列表 ──────────────────────────────────────
+f2b_banned_list() {
+    local JAIL="${1:-sshd}"
+    print_header "封禁 IP 列表 — $JAIL"
+
+    local RAW
+    RAW=$(fail2ban-client status "$JAIL" 2>/dev/null | grep "Banned IP" | sed 's/.*Banned IP list:\s*//')
+
+    if [ -z "$RAW" ] || [ "$RAW" = "" ]; then
+        echo -e "  ${GREEN}当前没有封禁的 IP${NC}"
+        return
+    fi
+
+    local i=1
+    for IP in $RAW; do
+        echo -e "  ${RED}[$i]${NC} $IP"
+        i=$((i+1))
+    done
+    echo ""
+    echo -e "  ${DIM}共 $((i-1)) 个封禁 IP${NC}"
+}
+
+# ── 手动解封 IP ───────────────────────────────────────────
+f2b_unban() {
+    local JAIL="${1:-sshd}"
+    print_header "手动解封 IP — $JAIL"
+
+    # 显示当前封禁列表
+    local RAW
+    RAW=$(fail2ban-client status "$JAIL" 2>/dev/null | grep "Banned IP" | sed 's/.*Banned IP list:\s*//')
+
+    if [ -z "$RAW" ] || [ "$RAW" = "" ]; then
+        echo -e "  ${GREEN}当前没有封禁的 IP，无需解封${NC}"
+        return
+    fi
+
+    local i=1 IPS=()
+    for IP in $RAW; do
+        echo -e "  ${RED}[$i]${NC} $IP"
+        IPS+=("$IP")
+        i=$((i+1))
+    done
+    echo ""
+
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    read -rp "  输入要解封的 IP 地址（直接回车取消）: " UNBAN_IP
+    [ -z "$UNBAN_IP" ] && { warn "已取消。"; return; }
+
+    echo ""
+    if fail2ban-client set "$JAIL" unbanip "$UNBAN_IP" 2>/dev/null; then
+        info "IP ${BOLD}$UNBAN_IP${NC} 已解封 ✓"
+    else
+        error "解封失败，请确认 IP 地址正确。"
+    fi
+}
+
+# ── 实时日志 ──────────────────────────────────────────────
+f2b_logs() {
+    print_header "Fail2ban 实时日志"
+    echo -e "  ${DIM}显示最近 30 条，按 Ctrl+C 退出实时模式${NC}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+
+    local LOG_FILE="/var/log/fail2ban.log"
+    if [ ! -f "$LOG_FILE" ]; then
+        LOG_FILE=$(journalctl -u fail2ban --no-pager -n 1 2>/dev/null | head -1)
+        # 用 journalctl
+        echo -e "  ${DIM}（使用 journalctl）${NC}"
+        echo ""
+        journalctl -u fail2ban -n 30 --no-pager 2>/dev/null             | grep -E "Ban|Unban|Found|WARNING|ERROR"             | while IFS= read -r line; do
+                if echo "$line" | grep -q "Ban"; then
+                    echo -e "  ${RED}$line${NC}"
+                elif echo "$line" | grep -q "Unban"; then
+                    echo -e "  ${GREEN}$line${NC}"
+                elif echo "$line" | grep -q "Found"; then
+                    echo -e "  ${YELLOW}$line${NC}"
+                else
+                    echo -e "  ${DIM}$line${NC}"
+                fi
+            done
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${DIM}按 Enter 开启实时跟踪（Ctrl+C 退出）...${NC}"
+        read -r _
+        journalctl -u fail2ban -f 2>/dev/null
+    else
+        tail -n 30 "$LOG_FILE"             | while IFS= read -r line; do
+                if echo "$line" | grep -q "Ban"; then
+                    echo -e "  ${RED}$line${NC}"
+                elif echo "$line" | grep -q "Unban"; then
+                    echo -e "  ${GREEN}$line${NC}"
+                elif echo "$line" | grep -q "Found"; then
+                    echo -e "  ${YELLOW}$line${NC}"
+                else
+                    echo -e "  ${DIM}$line${NC}"
+                fi
+            done
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${DIM}按 Enter 开启实时跟踪（Ctrl+C 退出）...${NC}"
+        read -r _
+        tail -f "$LOG_FILE"             | while IFS= read -r line; do
+                if echo "$line" | grep -q "Ban"; then
+                    echo -e "  ${RED}$line${NC}"
+                elif echo "$line" | grep -q "Unban"; then
+                    echo -e "  ${GREEN}$line${NC}"
+                elif echo "$line" | grep -q "Found"; then
+                    echo -e "  ${YELLOW}$line${NC}"
+                else
+                    echo -e "  $line"
+                fi
+            done
+    fi
+}
+
 # ══════════════════════════════════════════════════════════
 #  主菜单
 # ══════════════════════════════════════════════════════════
@@ -443,6 +690,7 @@ main_menu() {
         CUR_PWD=$(get_config "PasswordAuthentication")
         CUR_PUBKEY=$(get_config "PubkeyAuthentication")
         KEYCOUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null || echo 0)
+        local F2B_STAT; F2B_STAT=$(f2b_status)
 
         clear
         echo ""
@@ -454,6 +702,13 @@ main_menu() {
                  "  端口 ${BOLD}${CUR_PORT:-22}${NC}  |  公钥数 ${BOLD}${KEYCOUNT}${NC}"
         box_line "  密码登录 ${CUR_PWD:-未设置}  |  公钥认证 ${CUR_PUBKEY:-未设置}" \
                  "  密码登录 ${BOLD}${CUR_PWD:-未设置}${NC}  |  公钥认证 ${BOLD}${CUR_PUBKEY:-未设置}${NC}"
+        if [ "$F2B_STAT" = "running" ]; then
+            box_line "  Fail2ban: running" "  Fail2ban: ${GREEN}${BOLD}running${NC}"
+        elif [ "$F2B_STAT" = "stopped" ]; then
+            box_line "  Fail2ban: stopped" "  Fail2ban: ${RED}${BOLD}stopped${NC}"
+        else
+            box_line "  Fail2ban: 未安装" "  Fail2ban: ${YELLOW}${BOLD}未安装${NC}"
+        fi
         box_sep
         box_line "  1) 查看已有公钥" "  ${GREEN}1${NC}) 查看已有公钥"
         box_line "  2) 添加公钥"     "  ${GREEN}2${NC}) 添加公钥"
@@ -461,10 +716,11 @@ main_menu() {
         box_line "  4) 生成密钥对"   "  ${GREEN}4${NC}) 生成密钥对"
         box_line "  5) 设置登录方式" "  ${GREEN}5${NC}) 设置登录方式"
         box_line "  6) 修改 SSH 端口" "  ${GREEN}6${NC}) 修改 SSH 端口"
+        box_line "  7) Fail2ban 管理" "  ${GREEN}7${NC}) Fail2ban 管理"
         box_line "  0) 退出"         "  ${RED}0${NC}) 退出"
         box_bot
         echo ""
-        read -rp "  请选择功能 [0-6]: " CHOICE
+        read -rp "  请选择功能 [0-7]: " CHOICE
 
         case "$CHOICE" in
             1) show_keys ;;
@@ -473,6 +729,7 @@ main_menu() {
             4) generate_key ;;
             5) set_login_mode ;;
             6) change_port ;;
+            7) fail2ban_menu ;;
             0) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项，请重新输入。"; sleep 1; continue ;;
         esac
