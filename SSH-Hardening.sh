@@ -879,7 +879,23 @@ bbr_print_status() {
     [ -z "$RATE" ] && RATE="未设置"
     local BBR; BBR=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
     local CWND; CWND=$(ip route show | grep "^default" | grep -oP 'initcwnd \K\d+' || echo "10")
+
+    # 读取缓冲区大小
+    local RMEM_MAX WMEM_MAX RMEM_MB WMEM_MB
+    RMEM_MAX=$(sysctl -n net.core.rmem_max 2>/dev/null || echo 0)
+    WMEM_MAX=$(sysctl -n net.core.wmem_max 2>/dev/null || echo 0)
+    RMEM_MB=$(( RMEM_MAX / 1048576 ))
+    WMEM_MB=$(( WMEM_MAX / 1048576 ))
+
+    # tcp_rmem / tcp_wmem 的 max 字段
+    local TCP_RMEM_MAX TCP_WMEM_MAX TCP_RMEM_MB TCP_WMEM_MB
+    TCP_RMEM_MAX=$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null | awk '{print $3}')
+    TCP_WMEM_MAX=$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null | awk '{print $3}')
+    TCP_RMEM_MB=$(( ${TCP_RMEM_MAX:-0} / 1048576 ))
+    TCP_WMEM_MB=$(( ${TCP_WMEM_MAX:-0} / 1048576 ))
+
     echo -e "  网卡 ${BOLD}$DEV${NC}  |  拥塞控制 ${BOLD}$BBR${NC}  |  限速 ${BOLD}$RATE${NC}  |  initcwnd ${BOLD}$CWND${NC}"
+    echo -e "  rmem_max ${BOLD}${RMEM_MB}MB${NC}  |  wmem_max ${BOLD}${WMEM_MB}MB${NC}  |  tcp_rmem max ${BOLD}${TCP_RMEM_MB}MB${NC}  |  tcp_wmem max ${BOLD}${TCP_WMEM_MB}MB${NC}"
 }
 
 # ── 备份 sysctl ───────────────────────────────────────────
