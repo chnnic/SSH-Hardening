@@ -905,48 +905,6 @@ bbr_auto_calc() {
 }
 
 # ── 手动选择缓冲区模式 ────────────────────────────────────
-bbr_manual_buf() {
-    local MEM_MB=$1 MEM_LBL=$2
-
-    print_header "BBR 手动缓冲区配置"
-    echo -e "  内存：${BOLD}${MEM_LBL}${NC}"
-    echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    echo -e "  ${GREEN}1${NC}) 12 MB   — 低带宽 / 低延迟"
-    echo -e "  ${GREEN}2${NC}) 16 MB   — 小内存保守"
-    echo -e "  ${GREEN}3${NC}) 20 MB   — 中低带宽"
-    echo -e "  ${GREEN}4${NC}) 40 MB   — 中等带宽"
-    echo -e "  ${GREEN}5${NC}) 64 MB   — 高带宽推荐"
-    echo -e "  ${GREEN}6${NC}) 128 MB  — 超高带宽 / 高延迟"
-    echo -e "  ${RED}0${NC}) 返回"
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    echo ""
-    read -rp "  请选择 [0-6]: " CH
-
-    # 缓冲区映射表
-    local RMEM WMEM ADV_WIN NOTSENT TCP_RMEM_DEFAULT BUF_LBL
-    case "$CH" in
-        1) RMEM=12582912;  WMEM=12582912;  ADV_WIN=2; NOTSENT=131072; TCP_RMEM_DEFAULT=1048576; BUF_LBL=12 ;;
-        2) RMEM=16777216;  WMEM=16777216;  ADV_WIN=2; NOTSENT=131072; TCP_RMEM_DEFAULT=1048576; BUF_LBL=16 ;;
-        3) RMEM=20971520;  WMEM=20971520;  ADV_WIN=2; NOTSENT=131072; TCP_RMEM_DEFAULT=1048576; BUF_LBL=20 ;;
-        4) RMEM=41943040;  WMEM=41943040;  ADV_WIN=3; NOTSENT=262144; TCP_RMEM_DEFAULT=1048576; BUF_LBL=40 ;;
-        5) RMEM=67108864;  WMEM=67108864;  ADV_WIN=3; NOTSENT=524288; TCP_RMEM_DEFAULT=1048576; BUF_LBL=64 ;;
-        6) RMEM=134217728; WMEM=134217728; ADV_WIN=3; NOTSENT=524288; TCP_RMEM_DEFAULT=1048576; BUF_LBL=128 ;;
-        0) return ;;
-        *) warn "无效选项"; return ;;
-    esac
-
-    local MIN_FREE SWAP TCP_MEM
-    if   [ "$MEM_MB" -eq 512  ]; then MIN_FREE=32768; SWAP=10; TCP_MEM="32768 49152 98304"
-    elif [ "$MEM_MB" -eq 1024 ]; then MIN_FREE=65536; SWAP=10; TCP_MEM="49152 65536 131072"
-    else                               MIN_FREE=65536; SWAP=5;  TCP_MEM="131072 196608 393216"
-    fi
-
-    bbr_confirm_apply "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN" \
-        "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT" \
-        "手动选择（${MEM_LBL}）" "$BUF_LBL"
-}
-
 # ── 自动模式：带宽子菜单 ─────────────────────────────────
 bbr_menu_bandwidth() {
     local MEM_MB=$1 LAT_MS=$2 MEM_LBL=$3 LAT_LBL=$4
@@ -1011,20 +969,49 @@ bbr_menu_auto() {
 
 # ── 手动模式：内存子菜单 ─────────────────────────────────
 bbr_menu_manual() {
-    print_header "BBR 手动配置 — 选择内存"
-    echo -e "  ${GREEN}1${NC}) 512 MB"
-    echo -e "  ${GREEN}2${NC}) 1 GB"
-    echo -e "  ${GREEN}3${NC}) 2 GB"
-    echo -e "  ${RED}0${NC}) 返回"
+    # 自动检测系统内存
+    local MEM_KB; MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+    local MEM_MB=$(( MEM_KB / 1024 ))
+    local MEM_LBL
+    if   [ "$MEM_MB" -le 768  ]; then MEM_LBL="512MB"
+    elif [ "$MEM_MB" -le 1536 ]; then MEM_LBL="1GB"
+    else                               MEM_LBL="2GB+"
+    fi
+
+    print_header "BBR 手动缓冲区配置"
+    echo -e "  检测到系统内存：${BOLD}${MEM_MB}MB${NC}（内存参数将自动匹配）"
     echo ""
-    read -rp "  请选择 [0-3]: " CH
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${GREEN}1${NC}) 12 MB   — 低带宽 / 低延迟"
+    echo -e "  ${GREEN}2${NC}) 16 MB   — 小内存保守"
+    echo -e "  ${GREEN}3${NC}) 20 MB   — 中低带宽"
+    echo -e "  ${GREEN}4${NC}) 40 MB   — 中等带宽"
+    echo -e "  ${GREEN}5${NC}) 64 MB   — 高带宽推荐"
+    echo -e "  ${GREEN}6${NC}) 128 MB  — 超高带宽 / 高延迟"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    read -rp "  请选择 [0-6]: " CH
+
+    local RMEM WMEM ADV_WIN NOTSENT TCP_RMEM_DEFAULT BUF_LBL
     case "$CH" in
-        1) bbr_manual_buf 512  "512MB" ;;
-        2) bbr_manual_buf 1024 "1GB" ;;
-        3) bbr_manual_buf 2048 "2GB" ;;
+        1) RMEM=12582912;  WMEM=12582912;  ADV_WIN=2; NOTSENT=131072; TCP_RMEM_DEFAULT=1048576; BUF_LBL=12 ;;
+        2) RMEM=16777216;  WMEM=16777216;  ADV_WIN=2; NOTSENT=131072; TCP_RMEM_DEFAULT=1048576; BUF_LBL=16 ;;
+        3) RMEM=20971520;  WMEM=20971520;  ADV_WIN=2; NOTSENT=131072; TCP_RMEM_DEFAULT=1048576; BUF_LBL=20 ;;
+        4) RMEM=41943040;  WMEM=41943040;  ADV_WIN=3; NOTSENT=262144; TCP_RMEM_DEFAULT=1048576; BUF_LBL=40 ;;
+        5) RMEM=67108864;  WMEM=67108864;  ADV_WIN=3; NOTSENT=524288; TCP_RMEM_DEFAULT=1048576; BUF_LBL=64 ;;
+        6) RMEM=134217728; WMEM=134217728; ADV_WIN=3; NOTSENT=524288; TCP_RMEM_DEFAULT=1048576; BUF_LBL=128 ;;
         0) return ;;
-        *) warn "无效选项" ;;
+        *) warn "无效选项"; return ;;
     esac
+
+    local MIN_FREE SWAP TCP_MEM
+    if   [ "$MEM_MB" -le 768  ]; then MIN_FREE=32768; SWAP=10; TCP_MEM="32768 49152 98304"
+    elif [ "$MEM_MB" -le 1536 ]; then MIN_FREE=65536; SWAP=10; TCP_MEM="49152 65536 131072"
+    else                               MIN_FREE=65536; SWAP=5;  TCP_MEM="131072 196608 393216"
+    fi
+
+    bbr_confirm_apply "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN"         "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT"         "手动选择（内存 ${MEM_MB}MB）" "$BUF_LBL"
 }
 
 # ── tc 限速菜单 ───────────────────────────────────────────
