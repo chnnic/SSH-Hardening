@@ -378,7 +378,9 @@ set_login_mode() {
             set_config "PermitRootLogin"        "yes"
             apply_and_restart && info "已切换：仅密码登录 ✓"
             ;;
-        0|*) return ;;
+        0) return ;;
+        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        *) return ;;
     esac
 }
 
@@ -485,11 +487,13 @@ fail2ban_menu() {
             echo ""
             echo -e "  ${GREEN}1${NC}) 立即安装 Fail2ban"
             echo -e "  ${RED}0${NC}) 返回主菜单"
+            echo -e "  ${RED}00${NC}) 退出脚本"
             echo ""
             read -rp "  请选择 [0-1]: " CHOICE
             case "$CHOICE" in
                 1) f2b_install ;;
                 0) return ;;
+                00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1 ;;
             esac
             echo ""; read -rp "  按 Enter 继续..." _
@@ -548,6 +552,7 @@ fail2ban_menu() {
                 sleep 1; continue
                 ;;
             0) return ;;
+            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
@@ -717,6 +722,7 @@ bbr_restore_sysctl() {
     read -rp "  请选择: " CH
     case "$CH" in
         0) return ;;
+        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         d|D)
             read -rp "  确认清除全部 ${#BACKUPS[@]} 个备份？(yes/no): " C
             [ "$C" = "yes" ] && rm -f "${SYSCTL_FILE}.bak."* && info "已清除全部备份" || warn "已取消"
@@ -916,6 +922,7 @@ bbr_menu_bandwidth() {
     echo -e "  ${GREEN}3${NC}) 1 Gbps  (1024 Mbps)"
     echo -e "  ${GREEN}4${NC}) 2 Gbps  (2048 Mbps)"
     echo -e "  ${RED}0${NC}) 返回"
+    echo -e "  ${RED}00${NC}) 退出脚本"
     echo ""
     read -rp "  请选择 [0-4]: " CH
     case "$CH" in
@@ -924,6 +931,7 @@ bbr_menu_bandwidth() {
         3) bbr_auto_calc "$MEM_MB" "$LAT_MS" 1024 "$MEM_LBL" "$LAT_LBL" "1Gbps" ;;
         4) bbr_auto_calc "$MEM_MB" "$LAT_MS" 2048 "$MEM_LBL" "$LAT_LBL" "2Gbps" ;;
         0) return ;;
+        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项" ;;
     esac
 }
@@ -938,6 +946,7 @@ bbr_menu_latency() {
     echo -e "  ${GREEN}2${NC}) 100ms - 200ms  （跨国，如美西→中国）"
     echo -e "  ${GREEN}3${NC}) 200ms 以上     （欧洲→中国 / 长距离）"
     echo -e "  ${RED}0${NC}) 返回"
+    echo -e "  ${RED}00${NC}) 退出脚本"
     echo ""
     read -rp "  请选择 [0-3]: " CH
     case "$CH" in
@@ -945,6 +954,7 @@ bbr_menu_latency() {
         2) bbr_menu_bandwidth "$MEM_MB" 150 "$MEM_LBL" "100-200ms" ;;
         3) bbr_menu_bandwidth "$MEM_MB" 250 "$MEM_LBL" "200ms以上" ;;
         0) return ;;
+        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项" ;;
     esac
 }
@@ -956,6 +966,7 @@ bbr_menu_auto() {
     echo -e "  ${GREEN}2${NC}) 1 GB"
     echo -e "  ${GREEN}3${NC}) 2 GB"
     echo -e "  ${RED}0${NC}) 返回"
+    echo -e "  ${RED}00${NC}) 退出脚本"
     echo ""
     read -rp "  请选择 [0-3]: " CH
     case "$CH" in
@@ -963,6 +974,7 @@ bbr_menu_auto() {
         2) bbr_menu_latency 1024 "1GB" ;;
         3) bbr_menu_latency 2048 "2GB" ;;
         0) return ;;
+        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项" ;;
     esac
 }
@@ -989,6 +1001,7 @@ bbr_menu_manual() {
     echo -e "  ${GREEN}5${NC}) 64 MB   — 高带宽推荐"
     echo -e "  ${GREEN}6${NC}) 128 MB  — 超高带宽 / 高延迟"
     echo -e "  ${RED}0${NC}) 返回"
+    echo -e "  ${RED}00${NC}) 退出脚本"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
     read -rp "  请选择 [0-6]: " CH
@@ -1002,6 +1015,7 @@ bbr_menu_manual() {
         5) RMEM=67108864;  WMEM=67108864;  ADV_WIN=3; NOTSENT=524288; TCP_RMEM_DEFAULT=1048576; BUF_LBL=64 ;;
         6) RMEM=134217728; WMEM=134217728; ADV_WIN=3; NOTSENT=524288; TCP_RMEM_DEFAULT=1048576; BUF_LBL=128 ;;
         0) return ;;
+        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项"; return ;;
     esac
 
@@ -1035,6 +1049,7 @@ bbr_menu_tc() {
     echo -e "  ${GREEN}6${NC}) 自定义输入"
     echo -e "  ${YELLOW}7${NC}) 取消限速"
     echo -e "  ${RED}0${NC}) 返回"
+    echo -e "  ${RED}00${NC}) 退出脚本"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
     read -rp "  请选择 [0-7]: " CH
@@ -1054,6 +1069,7 @@ bbr_menu_tc() {
             ;;
         7) RATE=0 ;;
         0) return ;;
+        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项"; return ;;
     esac
 
@@ -1090,6 +1106,7 @@ bbr_menu_initcwnd() {
     echo -e "  ${GREEN}3${NC}) 100  — 激进（可能丢包）"
     echo -e "  ${GREEN}4${NC}) 自定义输入"
     echo -e "  ${RED}0${NC}) 返回"
+    echo -e "  ${RED}00${NC}) 退出脚本"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
     read -rp "  请选择 [0-4]: " CH
@@ -1106,6 +1123,7 @@ bbr_menu_initcwnd() {
             fi
             ;;
         0) return ;;
+        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         *) warn "无效选项"; return ;;
     esac
 
@@ -1145,6 +1163,7 @@ bbr_menu() {
         echo -e "  ${GREEN}5${NC}) 备份 sysctl.conf"
         echo -e "  ${GREEN}6${NC}) 还原 sysctl.conf"
         echo -e "  ${RED}0${NC}) 返回主菜单"
+            echo -e "  ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
         read -rp "  请选择 [0-6]: " CH
@@ -1157,6 +1176,7 @@ bbr_menu() {
             5) bbr_backup_sysctl ;;
             6) bbr_restore_sysctl ;;
             0) return ;;
+            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
