@@ -2308,11 +2308,10 @@ main_menu() {
             6) mirror_menu ;;
             7) ip_config_menu ;;
             0) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
-            *) warn "无效选项，请重新输入。"; sleep 1; continue ;;
+            *) warn "无效选项，请重新输入。"; sleep 1 ;;
         esac
-
-        echo ""
-        read -rp "  按 Enter 返回主菜单..." _
+        # 子菜单返回后直接刷新主菜单，不需要按 Enter
+        continue
     done
 }
 
