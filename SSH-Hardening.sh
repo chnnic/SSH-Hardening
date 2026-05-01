@@ -608,6 +608,11 @@ change_port() {
 f2b_status() {
     if ! command -v fail2ban-client &>/dev/null; then
         echo "not_installed"
+        return
+    fi
+    # 先用 fail2ban-client ping 检测实际运行状态（最可靠）
+    if fail2ban-client ping &>/dev/null 2>&1; then
+        echo "running"
     elif svc_is_active fail2ban 2>/dev/null; then
         echo "running"
     else
@@ -623,23 +628,44 @@ f2b_install() {
     if pkg_install fail2ban; then
         # 创建基础 jail.local（如果不存在）
         if [ ! -f /etc/fail2ban/jail.local ]; then
-            cat > /etc/fail2ban/jail.local << 'JAILEOF'
+            # Debian 12 使用 systemd-journald，backend 需要设为 systemd
+            local BACKEND="auto"
+            if grep -qi "debian" /etc/os-release 2>/dev/null; then
+                local VER; VER=$(grep VERSION_ID /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
+                [ "${VER%%.*}" -ge 12 ] 2>/dev/null && BACKEND="systemd"
+            fi
+            cat > /etc/fail2ban/jail.local << JAILEOF
 [DEFAULT]
 bantime  = 3600
 findtime = 600
 maxretry = 5
-backend  = auto
+backend  = ${BACKEND}
 
 [sshd]
 enabled  = true
 port     = ssh
 logpath  = %(sshd_log)s
 JAILEOF
-            info "已创建默认配置 /etc/fail2ban/jail.local"
+            info "已创建默认配置 /etc/fail2ban/jail.local（backend=${BACKEND}）"
         fi
         svc_enable fail2ban
+        # 等待服务完全启动
+        sleep 1
         start_fail2ban
-        info "Fail2ban 安装并启动成功 ✓"
+        sleep 2
+        # 验证是否真的启动了
+        if fail2ban-client ping &>/dev/null 2>&1; then
+            info "Fail2ban 安装并启动成功 ✓"
+        else
+            warn "服务可能未完全启动，尝试重启..."
+            systemctl restart fail2ban 2>/dev/null                 || rc-service fail2ban restart 2>/dev/null                 || true
+            sleep 2
+            if fail2ban-client ping &>/dev/null 2>&1; then
+                info "Fail2ban 启动成功 ✓"
+            else
+                error "启动失败，请查看日志：journalctl -u fail2ban -n 20"
+            fi
+        fi
     else
         error "安装失败，请检查网络或手动安装：apt install fail2ban"
     fi
@@ -960,7 +986,13 @@ fail2ban_menu() {
                 if [ "$F2B_ST" = "running" ]; then
                     stop_fail2ban && info "Fail2ban 已停止" || error "停止失败"
                 else
-                    start_fail2ban && info "Fail2ban 已启动" || error "启动失败"
+                    start_fail2ban
+                    sleep 2
+                    if fail2ban-client ping &>/dev/null 2>&1; then
+                        info "Fail2ban 已启动 ✓"
+                    else
+                        error "启动失败，请检查：journalctl -u fail2ban -n 20"
+                    fi
                 fi
                 sleep 1; continue
                 ;;
@@ -2507,6 +2539,497 @@ ip_config_menu() {
     done
 }
 
+
+# ══════════════════════════════════════════════════════════
+#  Caddy 模块
+# ══════════════════════════════════════════════════════════
+
+CADDYFILE="/etc/caddy/Caddyfile"
+CADDY_LOG="/var/log/caddy/access.log"
+
+# ── 检测 Caddy 状态 ───────────────────────────────────────
+caddy_status() {
+    if ! command -v caddy &>/dev/null; then
+        echo "not_installed"
+    elif svc_is_active caddy; then
+        echo "running"
+    else
+        echo "stopped"
+    fi
+}
+
+# ── 安装后初始化 ──────────────────────────────────────────
+caddy_post_install() {
+    mkdir -p /etc/caddy /var/log/caddy
+    if [ ! -f "$CADDYFILE" ]; then
+        cat > "$CADDYFILE" << 'CEOF'
+# Caddy 配置文件 — 由 VPS 开荒脚本生成
+# 文档：https://caddyserver.com/docs/caddyfile
+
+# 反向代理示例：
+# example.com {
+#     reverse_proxy localhost:8080
+# }
+
+# 静态网站示例：
+# example.com {
+#     root * /var/www/html
+#     file_server
+# }
+CEOF
+        info "已创建默认 Caddyfile：$CADDYFILE"
+    fi
+    svc_enable caddy
+    systemctl start caddy 2>/dev/null || rc-service caddy start 2>/dev/null || true
+    info "Caddy 已启动 ✓"
+}
+
+# ── 安装 Caddy（apt/apk/yum/二进制）─────────────────────
+caddy_install() {
+    print_header "安装 Caddy"
+    info "开始安装 Caddy..."
+    echo ""
+
+    if command -v apt-get &>/dev/null; then
+        apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl &>/dev/null
+        curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
+            | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null
+        curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt \
+            | tee /etc/apt/sources.list.d/caddy-stable.list &>/dev/null
+        apt-get update -qq &>/dev/null
+        apt-get install -y caddy 2>/dev/null && info "Caddy 安装成功 ✓" || caddy_install_binary
+    elif command -v apk &>/dev/null; then
+        apk add --no-cache caddy 2>/dev/null && info "Caddy 安装成功 ✓" || caddy_install_binary
+    elif command -v yum &>/dev/null; then
+        yum install -y yum-plugin-copr &>/dev/null
+        yum copr enable @caddy/caddy -y &>/dev/null
+        yum install -y caddy 2>/dev/null && info "Caddy 安装成功 ✓" || caddy_install_binary
+    elif command -v dnf &>/dev/null; then
+        dnf install -y yum-plugin-copr &>/dev/null
+        dnf copr enable @caddy/caddy -y &>/dev/null
+        dnf install -y caddy 2>/dev/null && info "Caddy 安装成功 ✓" || caddy_install_binary
+    else
+        caddy_install_binary
+    fi
+
+    caddy_post_install
+}
+
+# 二进制安装（通用回退）
+caddy_install_binary() {
+    info "从 GitHub 下载 Caddy 二进制..."
+    local ARCH; ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64)  ARCH="amd64" ;;
+        aarch64) ARCH="arm64" ;;
+        armv7l)  ARCH="armv7" ;;
+        *) error "不支持的架构：$ARCH"; return 1 ;;
+    esac
+
+    local TMP; TMP=$(mktemp -d)
+    local URL="https://github.com/caddyserver/caddy/releases/latest/download/caddy_linux_${ARCH}.tar.gz"
+
+    if curl -fsSL "$URL" -o "$TMP/caddy.tar.gz"; then
+        tar -xzf "$TMP/caddy.tar.gz" -C "$TMP"
+        install -m 755 "$TMP/caddy" /usr/local/bin/caddy
+        rm -rf "$TMP"
+        info "Caddy 二进制安装到 /usr/local/bin/caddy ✓"
+    else
+        rm -rf "$TMP"
+        error "下载失败，请检查网络"
+        return 1
+    fi
+
+    # 创建 systemd service
+    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+        useradd -r -d /var/lib/caddy -s /sbin/nologin caddy 2>/dev/null || true
+        cat > /etc/systemd/system/caddy.service << 'SVCEOF'
+[Unit]
+Description=Caddy Web Server
+After=network.target
+
+[Service]
+User=caddy
+Group=caddy
+ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+PrivateTmp=true
+ProtectSystem=full
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+        svc_daemon_reload
+    fi
+}
+
+# ── 卸载 Caddy ────────────────────────────────────────────
+caddy_uninstall() {
+    print_header "卸载 Caddy"
+    warn "即将卸载 Caddy（配置文件保留）"
+    echo ""
+    read -rp "  确认卸载？(yes/no): " CONFIRM
+    [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
+    systemctl stop caddy 2>/dev/null || rc-service caddy stop 2>/dev/null || true
+    svc_disable caddy
+    pkg_remove caddy 2>/dev/null
+    rm -f /usr/local/bin/caddy /etc/systemd/system/caddy.service
+    svc_daemon_reload
+    info "Caddy 已卸载 ✓（配置文件已保留）"
+}
+
+# ── 重载配置 ──────────────────────────────────────────────
+caddy_reload_config() {
+    echo ""
+    info "验证 Caddyfile 语法..."
+    if caddy validate --config "$CADDYFILE" 2>/tmp/caddy_err; then
+        info "语法验证通过 ✓"
+        if svc_is_active caddy; then
+            caddy reload --config "$CADDYFILE" 2>/dev/null && info "配置已重载 ✓"
+        else
+            systemctl start caddy 2>/dev/null \
+                || rc-service caddy start 2>/dev/null \
+                || caddy start --config "$CADDYFILE" &>/dev/null
+            info "Caddy 已启动 ✓"
+        fi
+    else
+        error "Caddyfile 语法错误："
+        while IFS= read -r l; do echo -e "  ${RED}$l${NC}"; done < /tmp/caddy_err
+        return 1
+    fi
+}
+
+# ── 查看所有站点 ──────────────────────────────────────────
+caddy_list_sites() {
+    print_header "当前 Caddy 站点"
+    if [ ! -f "$CADDYFILE" ]; then warn "Caddyfile 不存在"; return; fi
+
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    local i=0
+    while IFS= read -r line; do
+        echo "$line" | grep -qE '^\s*#|^\s*$' && continue
+        if echo "$line" | grep -qE '^[^ ].*\{'; then
+            local bname; bname=$(echo "$line" | awk '{print $1}')
+            i=$((i+1))
+            echo -e "  ${GREEN}[$i]${NC} ${BOLD}${bname}${NC}"
+        elif echo "$line" | grep -qE '^\s+(reverse_proxy|root|file_server|redir)'; then
+            local dir; dir=$(echo "$line" | awk '{print $1}')
+            local tgt; tgt=$(echo "$line" | awk '{$1=""; print $0}' | sed 's/^ //')
+            echo -e "      ${DIM}${dir}${NC} → ${CYAN}${tgt}${NC}"
+        elif echo "$line" | grep -qE '^\}'; then
+            echo ""
+        fi
+    done < "$CADDYFILE"
+    [ "$i" -eq 0 ] && echo -e "  ${YELLOW}暂无站点配置${NC}\n"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+}
+
+# ── 添加反向代理站点 ──────────────────────────────────────
+caddy_add_proxy() {
+    print_header "添加反向代理站点"
+    echo -e "  Caddy 将自动申请 Let's Encrypt SSL 证书"
+    echo ""
+    read -rp "  域名（如 example.com）: " DOMAIN
+    [ -z "$DOMAIN" ] && { warn "已取消"; return; }
+    read -rp "  转发到（如 127.0.0.1:8080）: " BACKEND
+    [ -z "$BACKEND" ] && { warn "已取消"; return; }
+    echo "$BACKEND" | grep -qE '^https?://' || BACKEND="http://${BACKEND}"
+
+    if grep -q "^${DOMAIN}" "$CADDYFILE" 2>/dev/null; then
+        warn "域名 ${DOMAIN} 已存在，请先删除再添加"; return
+    fi
+
+    echo ""
+    echo -e "  域名 : ${BOLD}${DOMAIN}${NC}"
+    echo -e "  后端 : ${BOLD}${BACKEND}${NC}"
+    echo -e "  SSL  : ${GREEN}自动${NC}"
+    echo ""
+    read -rp "  确认添加？(yes/no): " CONFIRM
+    [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
+
+    printf '\n%s {\n    reverse_proxy %s\n    encode gzip\n    log {\n        output file %s\n        format json\n    }\n}\n' \
+        "$DOMAIN" "$BACKEND" "$CADDY_LOG" >> "$CADDYFILE"
+
+    caddy_reload_config && info "站点 ${DOMAIN} 已添加 ✓"
+}
+
+# ── 添加静态网站 ──────────────────────────────────────────
+caddy_add_static() {
+    print_header "添加静态网站"
+    echo ""
+    read -rp "  域名（如 example.com）: " DOMAIN
+    [ -z "$DOMAIN" ] && { warn "已取消"; return; }
+    read -rp "  网站根目录（默认 /var/www/html）: " WEBROOT
+    WEBROOT="${WEBROOT:-/var/www/html}"
+
+    if grep -q "^${DOMAIN}" "$CADDYFILE" 2>/dev/null; then
+        warn "域名 ${DOMAIN} 已存在，请先删除再添加"; return
+    fi
+
+    echo ""
+    echo -e "  域名 : ${BOLD}${DOMAIN}${NC}"
+    echo -e "  目录 : ${BOLD}${WEBROOT}${NC}"
+    echo -e "  SSL  : ${GREEN}自动${NC}"
+    echo ""
+    read -rp "  确认添加？(yes/no): " CONFIRM
+    [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
+
+    mkdir -p "$WEBROOT"
+    printf '\n%s {\n    root * %s\n    file_server\n    encode gzip\n    log {\n        output file %s\n        format json\n    }\n}\n' \
+        "$DOMAIN" "$WEBROOT" "$CADDY_LOG" >> "$CADDYFILE"
+
+    caddy_reload_config && info "静态站点 ${DOMAIN} 已添加 ✓"
+}
+
+# ── 删除站点 ──────────────────────────────────────────────
+caddy_del_site() {
+    print_header "删除站点"
+    caddy_list_sites
+
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    read -rp "  输入要删除的域名（直接回车取消）: " DOMAIN
+    [ -z "$DOMAIN" ] && { warn "已取消"; return; }
+
+    if ! grep -q "^${DOMAIN}" "$CADDYFILE" 2>/dev/null; then
+        error "未找到域名：${DOMAIN}"; return
+    fi
+
+    warn "即将删除站点：${BOLD}${DOMAIN}${NC}"
+    read -rp "  确认删除？(yes/no): " CONFIRM
+    [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
+
+    python3 - "$CADDYFILE" "$DOMAIN" << 'PYEOF'
+import sys
+path, domain = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    lines = f.readlines()
+result = []
+skip = False
+depth = 0
+for line in lines:
+    s = line.strip()
+    if not skip and s.startswith(domain) and '{' in s:
+        skip = True
+        depth = s.count('{') - s.count('}')
+        while result and result[-1].strip() == '':
+            result.pop()
+        continue
+    if skip:
+        depth += s.count('{') - s.count('}')
+        if depth <= 0:
+            skip = False
+        continue
+    result.append(line)
+with open(path, 'w') as f:
+    f.writelines(result)
+PYEOF
+
+    caddy_reload_config && info "站点 ${DOMAIN} 已删除 ✓"
+}
+
+# ── SSL 证书状态 ──────────────────────────────────────────
+caddy_ssl_status() {
+    print_header "SSL 证书状态"
+    echo -e "  ${DIM}Caddy 自动管理证书，首次访问时自动申请${NC}"
+    echo ""
+
+    local CERT_DIR=""
+    for d in /var/lib/caddy/.local/share/caddy/certificates \
+              /root/.local/share/caddy/certificates \
+              /home/caddy/.local/share/caddy/certificates; do
+        [ -d "$d" ] && CERT_DIR="$d" && break
+    done
+
+    if [ -z "$CERT_DIR" ]; then
+        warn "未找到证书目录（证书将在首次访问时自动申请）"
+        return
+    fi
+
+    echo -e "  证书目录：${DIM}${CERT_DIR}${NC}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    find "$CERT_DIR" -name "*.crt" 2>/dev/null | while read -r cert; do
+        local DN; DN=$(basename "$(dirname "$cert")")
+        local EXP; EXP=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)
+        echo -e "  ${GREEN}▸${NC} ${BOLD}${DN}${NC}"
+        [ -n "$EXP" ] && echo -e "    ${DIM}到期：${NC}${EXP}"
+    done
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+}
+
+# ── 查看访问日志 ──────────────────────────────────────────
+caddy_view_logs() {
+    print_header "Caddy 访问日志"
+    local LOG_FILE="$CADDY_LOG"
+    [ ! -f "$LOG_FILE" ] && LOG_FILE=$(find /var/log/caddy /var/log -name "*.log" 2>/dev/null | grep -i caddy | head -1)
+
+    if [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then
+        if command -v journalctl &>/dev/null; then
+            echo -e "  ${DIM}使用 journalctl${NC}"
+            echo ""
+            journalctl -u caddy -n 50 --no-pager 2>/dev/null | while IFS= read -r line; do
+                echo -e "  $line"
+            done
+            echo ""
+            read -rp "  按 Enter 开启实时跟踪（Ctrl+C 退出）..." _
+            journalctl -u caddy -f 2>/dev/null
+        else
+            warn "未找到 Caddy 日志文件，请确认 Caddyfile 中已配置 log 指令"
+        fi
+        return
+    fi
+
+    echo -e "  ${DIM}${LOG_FILE}${NC}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    tail -n 30 "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do
+        local STATUS; STATUS=$(echo "$line" | python3 -c \
+            "import sys,json
+try:
+    d=json.loads(sys.stdin.read())
+    print(d.get('status',''))
+except: print('')" 2>/dev/null)
+        if [ -n "$STATUS" ]; then
+            local SC="$GREEN"
+            [ "$STATUS" -ge 400 ] 2>/dev/null && SC="$YELLOW"
+            [ "$STATUS" -ge 500 ] 2>/dev/null && SC="$RED"
+            local TS METHOD URI
+            TS=$(echo "$line" | python3 -c \
+                "import sys,json
+try:
+    d=json.loads(sys.stdin.read())
+    print(d.get('ts','')[:19].replace('T',' '))
+except: print('')" 2>/dev/null)
+            METHOD=$(echo "$line" | python3 -c \
+                "import sys,json
+try:
+    d=json.loads(sys.stdin.read())
+    print(d.get('request',{}).get('method',''))
+except: print('')" 2>/dev/null)
+            URI=$(echo "$line" | python3 -c \
+                "import sys,json
+try:
+    d=json.loads(sys.stdin.read())
+    print(d.get('request',{}).get('uri',''))
+except: print('')" 2>/dev/null)
+            echo -e "  ${DIM}${TS}${NC} ${BOLD}${METHOD}${NC} ${URI} ${SC}${STATUS}${NC}"
+        else
+            echo -e "  $line"
+        fi
+    done
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    read -rp "  按 Enter 开启实时跟踪（Ctrl+C 退出）..." _
+    tail -f "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do echo -e "  $line"; done
+}
+
+# ── 编辑 Caddyfile ────────────────────────────────────────
+caddy_edit_raw() {
+    print_header "编辑 Caddyfile"
+    echo -e "  配置文件：${BOLD}${CADDYFILE}${NC}"
+    echo ""
+    warn "Ctrl+O 保存，Ctrl+X 退出，保存后自动验证并重载"
+    echo ""
+    read -rp "  按 Enter 开始编辑..." _
+    [ -f "$CADDYFILE" ] || { mkdir -p /etc/caddy; touch "$CADDYFILE"; }
+    nano "$CADDYFILE"
+    echo ""
+    caddy_reload_config
+}
+
+# ── Caddy 主菜单 ──────────────────────────────────────────
+caddy_menu() {
+    while true; do
+        local C_ST; C_ST=$(caddy_status)
+        local C_COLOR
+        case "$C_ST" in
+            running)       C_COLOR="$GREEN" ;;
+            stopped)       C_COLOR="$RED" ;;
+            not_installed) C_COLOR="$YELLOW" ;;
+        esac
+
+        print_header "Caddy 管理"
+
+        if [ "$C_ST" = "not_installed" ]; then
+            echo -e "  服务状态: ${C_COLOR}${BOLD}未安装${NC}"
+            echo ""
+            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            echo -e "  ${GREEN}1${NC}) 安装 Caddy"
+            echo -e "  ${RED}0${NC}) 返回"
+            echo -e "  ${RED}00${NC}) 退出脚本"
+            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+            echo ""
+            read -rp "  请选择 [0-1]: " CH
+            case "$CH" in
+                1) caddy_install ;;
+                0) return ;;
+                00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                *) warn "无效选项"; sleep 1 ;;
+            esac
+            echo ""; read -rp "  按 Enter 继续..." _
+            continue
+        fi
+
+        local C_VER; C_VER=$(caddy version 2>/dev/null | awk '{print $1}')
+        local SITE_COUNT; SITE_COUNT=$(grep -cE '^[^ ].*\{' "$CADDYFILE" 2>/dev/null || echo 0)
+
+        echo -e "  服务: ${C_COLOR}${BOLD}${C_ST}${NC}  版本: ${BOLD}${C_VER:-未知}${NC}  站点数: ${BOLD}${SITE_COUNT}${NC}"
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 查看所有站点"
+        echo -e "  ${GREEN}2${NC}) 添加反向代理站点"
+        echo -e "  ${GREEN}3${NC}) 添加静态网站"
+        echo -e "  ${GREEN}4${NC}) 删除站点"
+        echo -e "  ${GREEN}5${NC}) SSL 证书状态"
+        echo -e "  ${GREEN}6${NC}) 查看访问日志"
+        echo -e "  ${GREEN}7${NC}) 编辑 Caddyfile"
+        echo -e "  ${GREEN}8${NC}) 重载配置"
+        if [ "$C_ST" = "running" ]; then
+            echo -e "  ${YELLOW}9${NC}) 停止服务"
+        else
+            echo -e "  ${GREEN}9${NC}) 启动服务"
+        fi
+        echo -e "  ${YELLOW}d${NC}) 卸载 Caddy"
+        echo -e "  ${RED}0${NC}) 返回"
+        echo -e "  ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo ""
+        read -rp "  请选择: " CH
+
+        case "$CH" in
+            1) caddy_list_sites ;;
+            2) caddy_add_proxy ;;
+            3) caddy_add_static ;;
+            4) caddy_del_site ;;
+            5) caddy_ssl_status ;;
+            6) caddy_view_logs ;;
+            7) caddy_edit_raw ;;
+            8) caddy_reload_config ;;
+            9)
+                if [ "$C_ST" = "running" ]; then
+                    systemctl stop caddy 2>/dev/null || rc-service caddy stop 2>/dev/null
+                    info "Caddy 已停止 ✓"
+                else
+                    systemctl start caddy 2>/dev/null \
+                        || rc-service caddy start 2>/dev/null \
+                        || caddy start --config "$CADDYFILE" &>/dev/null
+                    info "Caddy 已启动 ✓"
+                fi
+                sleep 1; continue
+                ;;
+            d|D) caddy_uninstall ;;
+            0) return ;;
+            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+
+        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+    done
+}
+
+
 # ══════════════════════════════════════════════════════════
 #  主菜单
 # ══════════════════════════════════════════════════════════
@@ -2549,6 +3072,14 @@ main_menu() {
         local TC_RATE; TC_RATE=$(tc qdisc show dev "$(ip route | awk '/^default/{print $5}')" 2>/dev/null | grep -oE '(maxrate|rate) [^ ]+' | head -1 | awk '{print $2}'); [ -z "$TC_RATE" ] && TC_RATE="无限速"
         box_line "  BBR: ${BBR_CC}  |  限速: ${TC_RATE}" "  BBR: ${BOLD}${BBR_CC}${NC}  |  限速: ${BOLD}${TC_RATE}${NC}"
         box_line "  防火墙: ${FW_STAT}" "  防火墙: ${FW_COLOR}${BOLD}${FW_STAT}${NC}"
+        local CADDY_ST; CADDY_ST=$(caddy_status)
+        local CADDY_COLOR
+        case "$CADDY_ST" in
+            running)       CADDY_COLOR="$GREEN" ;;
+            stopped)       CADDY_COLOR="$RED" ;;
+            not_installed) CADDY_COLOR="$YELLOW" ;;
+        esac
+        box_line "  Caddy: ${CADDY_ST}" "  Caddy: ${CADDY_COLOR}${BOLD}${CADDY_ST}${NC}"
         box_sep
         box_line "  1) SSH 工具集"   "  ${GREEN}1${NC}) SSH 工具集"
         box_line "  2) Fail2ban 管理" "  ${GREEN}2${NC}) Fail2ban 管理"
@@ -2557,10 +3088,11 @@ main_menu() {
         box_line "  5) DNS 优化"     "  ${GREEN}5${NC}) DNS 优化"
         box_line "  6) 系统换源"     "  ${GREEN}6${NC}) 系统换源"
         box_line "  7) IPv4/IPv6 配置" "  ${GREEN}7${NC}) IPv4/IPv6 配置"
+        box_line "  8) Caddy 管理"    "  ${GREEN}8${NC}) Caddy 管理"
         box_line "  0) 退出"         "  ${RED}0${NC}) 退出"
         box_bot
         echo ""
-        read -rp "  请选择功能 [0-7]: " CHOICE
+        read -rp "  请选择功能 [0-8]: " CHOICE
 
         case "$CHOICE" in
             1) ssh_tools_menu ;;
@@ -2570,6 +3102,7 @@ main_menu() {
             5) dns_menu ;;
             6) mirror_menu ;;
             7) ip_config_menu ;;
+            8) caddy_menu ;;
             0) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项，请重新输入。"; sleep 1 ;;
         esac
@@ -2578,4 +3111,4 @@ main_menu() {
     done
 }
 
-main_menu
+main_menu# CADDY_MODULE_PLACEHOLDER
