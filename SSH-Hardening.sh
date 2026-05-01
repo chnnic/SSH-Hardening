@@ -652,25 +652,83 @@ f2b_install() {
     if pkg_install fail2ban; then
         # 创建基础 jail.local（如果不存在）
         if [ ! -f /etc/fail2ban/jail.local ]; then
-            # Debian 12 使用 systemd-journald，backend 需要设为 systemd
+            # 检测日志后端：有 auth.log 用 auto，否则用 systemd
             local BACKEND="auto"
-            if grep -qi "debian" /etc/os-release 2>/dev/null; then
-                local VER; VER=$(grep VERSION_ID /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
-                [ "${VER%%.*}" -ge 12 ] 2>/dev/null && BACKEND="systemd"
+            local HAS_AUTHLOG=false
+            [ -f /var/log/auth.log ] && HAS_AUTHLOG=true
+            [ -f /var/log/secure ]   && HAS_AUTHLOG=true
+
+            if [ "$HAS_AUTHLOG" = false ]; then
+                BACKEND="systemd"
             fi
-            cat > /etc/fail2ban/jail.local << JAILEOF
+
+            # 检测 fail2ban 版本是否需要 allowipv6
+            local F2B_VER; F2B_VER=$(fail2ban-client version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+            local NEED_ALLOWIPV6=false
+            # fail2ban >= 1.0 需要 allowipv6
+            local F2B_MAJOR; F2B_MAJOR=$(echo "$F2B_VER" | cut -d. -f1)
+            [ "${F2B_MAJOR:-0}" -ge 1 ] && NEED_ALLOWIPV6=true
+
+            if [ "$BACKEND" = "systemd" ]; then
+                # systemd backend 不需要 logpath
+                if [ "$NEED_ALLOWIPV6" = true ]; then
+                    cat > /etc/fail2ban/jail.local << 'JAILEOF'
 [DEFAULT]
 bantime  = 3600
 findtime = 600
 maxretry = 5
-backend  = ${BACKEND}
+backend  = systemd
+allowipv6 = auto
+
+[sshd]
+enabled  = true
+port     = ssh
+JAILEOF
+                else
+                    cat > /etc/fail2ban/jail.local << 'JAILEOF'
+[DEFAULT]
+bantime  = 3600
+findtime = 600
+maxretry = 5
+backend  = systemd
+
+[sshd]
+enabled  = true
+port     = ssh
+JAILEOF
+                fi
+            else
+                # auto backend 保留 logpath
+                if [ "$NEED_ALLOWIPV6" = true ]; then
+                    cat > /etc/fail2ban/jail.local << 'JAILEOF'
+[DEFAULT]
+bantime  = 3600
+findtime = 600
+maxretry = 5
+backend  = auto
+allowipv6 = auto
 
 [sshd]
 enabled  = true
 port     = ssh
 logpath  = %(sshd_log)s
 JAILEOF
-            info "已创建默认配置 /etc/fail2ban/jail.local（backend=${BACKEND}）"
+                else
+                    cat > /etc/fail2ban/jail.local << 'JAILEOF'
+[DEFAULT]
+bantime  = 3600
+findtime = 600
+maxretry = 5
+backend  = auto
+
+[sshd]
+enabled  = true
+port     = ssh
+logpath  = %(sshd_log)s
+JAILEOF
+                fi
+            fi
+            info "已创建配置 /etc/fail2ban/jail.local（backend=${BACKEND}）"
         fi
         # Debian/Ubuntu 可能存在 unit 被 mask 的问题，强制 unmask
         if command -v systemctl &>/dev/null; then
