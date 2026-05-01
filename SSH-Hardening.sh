@@ -1806,6 +1806,258 @@ ssh_tools_menu() {
     done
 }
 
+
+# ══════════════════════════════════════════════════════════
+#  DNS 优化模块
+# ══════════════════════════════════════════════════════════
+
+dns_show_current() {
+    echo -e "  ${BOLD}当前 DNS 地址：${NC}"
+    grep "^nameserver" /etc/resolv.conf 2>/dev/null | while read -r line; do
+        local IP; IP=$(echo "$line" | awk '{print $2}')
+        # IPv6 用黄色，IPv4 用青色
+        if echo "$IP" | grep -q ":"; then
+            echo -e "    ${YELLOW}$line${NC}"
+        else
+            echo -e "    ${CYAN}$line${NC}"
+        fi
+    done
+}
+
+dns_write() {
+    local V4_LIST="$1"
+    local V6_LIST="$2"
+    local RESOLV="/etc/resolv.conf"
+
+    # 去除 chattr 锁定（某些系统会锁定 resolv.conf）
+    chattr -i "$RESOLV" 2>/dev/null
+
+    # 备份
+    cp "$RESOLV" "${RESOLV}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null
+
+    # 保留非 nameserver 行
+    local OTHER
+    OTHER=$(grep -v "^nameserver" "$RESOLV" 2>/dev/null)
+
+    {
+        [ -n "$OTHER" ] && echo "$OTHER"
+        for ip in $V4_LIST; do echo "nameserver $ip"; done
+        for ip in $V6_LIST; do echo "nameserver $ip"; done
+    } > "$RESOLV"
+
+    info "DNS 已更新 ✓"
+    echo ""
+    echo -e "  ${BOLD}更新后：${NC}"
+    grep "^nameserver" "$RESOLV" | while read -r line; do
+        local IP; IP=$(echo "$line" | awk '{print $2}')
+        echo "$IP" | grep -q ":" \
+            && echo -e "    ${YELLOW}$line${NC}" \
+            || echo -e "    ${CYAN}$line${NC}"
+    done
+}
+
+dns_menu() {
+    while true; do
+        print_header "DNS 优化"
+        dns_show_current
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${BOLD}国外 DNS：${NC}"
+        echo -e "  ${GREEN}1${NC}) Cloudflare  v4: 1.1.1.1 / 1.0.0.1"
+        echo -e "       v6: 2606:4700:4700::1111 / 2606:4700:4700::1001"
+        echo -e "  ${GREEN}2${NC}) Google      v4: 8.8.8.8 / 8.8.4.4"
+        echo -e "       v6: 2001:4860:4860::8888 / 2001:4860:4860::8844"
+        echo -e "  ${GREEN}3${NC}) 混合推荐    Cloudflare + Google"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${BOLD}国内 DNS：${NC}"
+        echo -e "  ${GREEN}4${NC}) 阿里云      v4: 223.5.5.5 / 223.6.6.6"
+        echo -e "       v6: 2400:3200::1 / 2400:3200:baba::1"
+        echo -e "  ${GREEN}5${NC}) 腾讯 DNSpod v4: 119.29.29.29 / 183.60.83.19"
+        echo -e "  ${GREEN}6${NC}) 114 DNS     v4: 114.114.114.114 / 114.114.115.115"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}7${NC}) 手动编辑 DNS 配置"
+        echo -e "  ${RED}0${NC}) 返回"
+        echo -e "  ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo ""
+        read -rp "  请选择 [0-7]: " CH
+
+        case "$CH" in
+            1) dns_write "1.1.1.1 1.0.0.1" "2606:4700:4700::1111 2606:4700:4700::1001" ;;
+            2) dns_write "8.8.8.8 8.8.4.4" "2001:4860:4860::8888 2001:4860:4860::8844" ;;
+            3) dns_write "1.1.1.1 8.8.8.8" "2606:4700:4700::1111 2001:4860:4860::8888" ;;
+            4) dns_write "223.5.5.5 223.6.6.6" "2400:3200::1 2400:3200:baba::1" ;;
+            5) dns_write "119.29.29.29 183.60.83.19" "" ;;
+            6) dns_write "114.114.114.114 114.114.115.115" "" ;;
+            7)
+                warn "即将用 nano 编辑 /etc/resolv.conf"
+                chattr -i /etc/resolv.conf 2>/dev/null
+                read -rp "  按 Enter 继续..." _
+                nano /etc/resolv.conf
+                info "DNS 配置已保存"
+                ;;
+            0) return ;;
+            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+
+        echo ""
+        read -rp "  按 Enter 返回..." _
+    done
+}
+
+# ══════════════════════════════════════════════════════════
+#  换源模块
+# ══════════════════════════════════════════════════════════
+
+# 检测系统发行版
+detect_os() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        echo "${ID}:${VERSION_ID}"
+    else
+        echo "unknown"
+    fi
+}
+
+mirror_backup() {
+    local SRC_FILE="$1"
+    local BAK="${SRC_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+    cp "$SRC_FILE" "$BAK" 2>/dev/null && info "已备份原始源文件：$BAK"
+}
+
+mirror_apply_ubuntu() {
+    local MIRROR="$1"
+    local CODENAME; CODENAME=$(lsb_release -cs 2>/dev/null || grep VERSION_CODENAME /etc/os-release | cut -d= -f2)
+    mirror_backup "/etc/apt/sources.list"
+    cat > /etc/apt/sources.list << EOF
+deb ${MIRROR} ${CODENAME} main restricted universe multiverse
+deb ${MIRROR} ${CODENAME}-updates main restricted universe multiverse
+deb ${MIRROR} ${CODENAME}-backports main restricted universe multiverse
+deb ${MIRROR} ${CODENAME}-security main restricted universe multiverse
+EOF
+    info "已切换 Ubuntu 源 → $MIRROR"
+    apt-get update -qq && info "apt update 完成 ✓" || warn "apt update 出现警告，请检查"
+}
+
+mirror_apply_debian() {
+    local MIRROR="$1"
+    local CODENAME; CODENAME=$(lsb_release -cs 2>/dev/null || grep VERSION_CODENAME /etc/os-release | cut -d= -f2)
+    mirror_backup "/etc/apt/sources.list"
+    cat > /etc/apt/sources.list << EOF
+deb ${MIRROR} ${CODENAME} main contrib non-free non-free-firmware
+deb ${MIRROR} ${CODENAME}-updates main contrib non-free non-free-firmware
+deb ${MIRROR} ${CODENAME}-backports main contrib non-free non-free-firmware
+deb ${MIRROR}-security ${CODENAME}-security main contrib non-free non-free-firmware
+EOF
+    info "已切换 Debian 源 → $MIRROR"
+    apt-get update -qq && info "apt update 完成 ✓" || warn "apt update 出现警告，请检查"
+}
+
+mirror_apply_centos() {
+    local REGION="$1"
+    if command -v dnf &>/dev/null; then
+        dnf install -y epel-release &>/dev/null
+        case "$REGION" in
+            cn)    dnf config-manager --setopt="*.baseurl=https://mirrors.aliyun.com/centos/\$releasever" --save &>/dev/null ;;
+            edu)   dnf config-manager --setopt="*.baseurl=https://mirrors.tuna.tsinghua.edu.cn/centos/\$releasever" --save &>/dev/null ;;
+            *)     info "海外地区使用默认源" ;;
+        esac
+    fi
+    info "CentOS/Rocky 源已更新 ✓"
+}
+
+mirror_menu() {
+    while true; do
+        local OS_INFO; OS_INFO=$(detect_os)
+        local OS_ID; OS_ID=$(echo "$OS_INFO" | cut -d: -f1)
+        local OS_VER; OS_VER=$(echo "$OS_INFO" | cut -d: -f2)
+
+        print_header "系统换源"
+        echo -e "  检测到系统：${BOLD}${OS_ID} ${OS_VER}${NC}"
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+
+        case "$OS_ID" in
+            ubuntu)
+                echo -e "  ${GREEN}1${NC}) 中国大陆【阿里云】    mirrors.aliyun.com"
+                echo -e "  ${GREEN}2${NC}) 中国大陆【腾讯云】    mirrors.tencent.com"
+                echo -e "  ${GREEN}3${NC}) 中国大陆【清华】      mirrors.tuna.tsinghua.edu.cn"
+                echo -e "  ${GREEN}4${NC}) 中国大陆【中科大】    mirrors.ustc.edu.cn"
+                echo -e "  ${GREEN}5${NC}) 海外地区【官方源】    archive.ubuntu.com"
+                echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+                echo -e "  ${RED}0${NC}) 返回"
+                echo -e "  ${RED}00${NC}) 退出脚本"
+                echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+                echo ""
+                read -rp "  请选择 [0-5]: " CH
+                case "$CH" in
+                    1) mirror_apply_ubuntu "https://mirrors.aliyun.com/ubuntu" ;;
+                    2) mirror_apply_ubuntu "https://mirrors.tencent.com/ubuntu" ;;
+                    3) mirror_apply_ubuntu "https://mirrors.tuna.tsinghua.edu.cn/ubuntu" ;;
+                    4) mirror_apply_ubuntu "https://mirrors.ustc.edu.cn/ubuntu" ;;
+                    5) mirror_apply_ubuntu "http://archive.ubuntu.com/ubuntu" ;;
+                    0) return ;;
+                    00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                    *) warn "无效选项"; sleep 1; continue ;;
+                esac
+                ;;
+            debian)
+                echo -e "  ${GREEN}1${NC}) 中国大陆【阿里云】    mirrors.aliyun.com"
+                echo -e "  ${GREEN}2${NC}) 中国大陆【腾讯云】    mirrors.tencent.com"
+                echo -e "  ${GREEN}3${NC}) 中国大陆【清华】      mirrors.tuna.tsinghua.edu.cn"
+                echo -e "  ${GREEN}4${NC}) 中国大陆【中科大】    mirrors.ustc.edu.cn"
+                echo -e "  ${GREEN}5${NC}) 海外地区【官方源】    deb.debian.org"
+                echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+                echo -e "  ${RED}0${NC}) 返回"
+                echo -e "  ${RED}00${NC}) 退出脚本"
+                echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+                echo ""
+                read -rp "  请选择 [0-5]: " CH
+                case "$CH" in
+                    1) mirror_apply_debian "https://mirrors.aliyun.com/debian" ;;
+                    2) mirror_apply_debian "https://mirrors.tencent.com/debian" ;;
+                    3) mirror_apply_debian "https://mirrors.tuna.tsinghua.edu.cn/debian" ;;
+                    4) mirror_apply_debian "https://mirrors.ustc.edu.cn/debian" ;;
+                    5) mirror_apply_debian "http://deb.debian.org/debian" ;;
+                    0) return ;;
+                    00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                    *) warn "无效选项"; sleep 1; continue ;;
+                esac
+                ;;
+            centos|rocky|rhel|almalinux)
+                echo -e "  ${GREEN}1${NC}) 中国大陆【阿里云】"
+                echo -e "  ${GREEN}2${NC}) 中国大陆【清华】"
+                echo -e "  ${GREEN}3${NC}) 海外地区【默认】"
+                echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+                echo -e "  ${RED}0${NC}) 返回"
+                echo -e "  ${RED}00${NC}) 退出脚本"
+                echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+                echo ""
+                read -rp "  请选择 [0-3]: " CH
+                case "$CH" in
+                    1) mirror_apply_centos "cn" ;;
+                    2) mirror_apply_centos "edu" ;;
+                    3) mirror_apply_centos "intl" ;;
+                    0) return ;;
+                    00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+                    *) warn "无效选项"; sleep 1; continue ;;
+                esac
+                ;;
+            *)
+                warn "暂不支持自动换源的系统：${OS_ID}"
+                warn "请手动修改 /etc/apt/sources.list 或对应源文件"
+                echo ""
+                read -rp "  按 Enter 返回..." _
+                return
+                ;;
+        esac
+
+        echo ""
+        read -rp "  按 Enter 返回..." _
+    done
+}
+
 # ══════════════════════════════════════════════════════════
 #  主菜单
 # ══════════════════════════════════════════════════════════
@@ -1853,16 +2105,20 @@ main_menu() {
         box_line "  2) Fail2ban 管理" "  ${GREEN}2${NC}) Fail2ban 管理"
         box_line "  3) BBR TCP 调优" "  ${GREEN}3${NC}) BBR TCP 调优"
         box_line "  4) 防火墙管理"   "  ${GREEN}4${NC}) 防火墙管理"
+        box_line "  5) DNS 优化"     "  ${GREEN}5${NC}) DNS 优化"
+        box_line "  6) 系统换源"     "  ${GREEN}6${NC}) 系统换源"
         box_line "  0) 退出"         "  ${RED}0${NC}) 退出"
         box_bot
         echo ""
-        read -rp "  请选择功能 [0-4]: " CHOICE
+        read -rp "  请选择功能 [0-6]: " CHOICE
 
         case "$CHOICE" in
             1) ssh_tools_menu ;;
             2) fail2ban_menu ;;
             3) bbr_menu ;;
             4) firewall_menu ;;
+            5) dns_menu ;;
+            6) mirror_menu ;;
             0) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项，请重新输入。"; sleep 1; continue ;;
         esac
