@@ -730,34 +730,36 @@ JAILEOF
             fi
             info "已创建配置 /etc/fail2ban/jail.local（backend=${BACKEND}）"
         fi
-        # Debian/Ubuntu 可能存在 unit 被 mask 的问题，强制 unmask
-        if command -v systemctl &>/dev/null; then
+        # 先停止可能正在运行的旧实例，清理 socket
+        systemctl stop fail2ban 2>/dev/null || true
+        rm -f /var/run/fail2ban/fail2ban.sock 2>/dev/null || true
+
+        # unmask + enable（处理 static unit 问题）
+        if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
             systemctl unmask fail2ban 2>/dev/null || true
             systemctl daemon-reload 2>/dev/null || true
+            systemctl enable fail2ban 2>/dev/null || true
         fi
 
-        svc_enable fail2ban
-        sleep 1
-        start_fail2ban
-        sleep 2
-
-        # 验证是否真正启动
-        if fail2ban-client ping &>/dev/null 2>&1; then
-            info "Fail2ban 安装并启动成功 ✓"
-        else
-            warn "首次启动失败，尝试强制重启..."
-            systemctl unmask fail2ban 2>/dev/null || true
-            systemctl enable fail2ban 2>/dev/null || true
-            systemctl restart fail2ban 2>/dev/null                 || rc-service fail2ban restart 2>/dev/null                 || true
-            sleep 3
+        # 验证配置正确再启动
+        info "验证 fail2ban 配置..."
+        if fail2ban-server -t &>/dev/null 2>&1; then
+            info "配置验证通过，正在启动..."
+            start_fail2ban
+            sleep 2
             if fail2ban-client ping &>/dev/null 2>&1; then
-                info "Fail2ban 启动成功 ✓"
+                info "Fail2ban 安装并启动成功 ✓"
             else
-                error "启动失败，请手动执行以下命令排查："
-                echo -e "  ${DIM}systemctl unmask fail2ban${NC}"
-                echo -e "  ${DIM}systemctl enable --now fail2ban${NC}"
-                echo -e "  ${DIM}journalctl -u fail2ban -n 30${NC}"
+                error "启动失败，请查看日志：journalctl -u fail2ban -n 20"
             fi
+        else
+            # 配置有问题，显示具体错误
+            error "配置验证失败，错误信息："
+            fail2ban-server -t 2>&1 | while IFS= read -r l; do
+                echo -e "  ${RED}$l${NC}"
+            done
+            echo ""
+            warn "请进入「基础参数配置」或「编辑配置文件」修复后再启动"
         fi
     else
         error "安装失败，请检查网络或手动安装：apt install fail2ban"
