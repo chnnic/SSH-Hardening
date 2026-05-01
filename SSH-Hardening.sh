@@ -78,6 +78,170 @@ print_header() {
     echo ""
 }
 
+
+# ── 兼容工具函数（支持 BusyBox / Alpine）─────────────────
+
+# 替代 grep -oP '(?:maxrate|rate) \K\S+'
+# 用法: tc_get_rate <tc_output>
+tc_get_rate() {
+    echo "$1" | grep -oE '(maxrate|rate) [^ ]+' | head -1 | awk '{print $2}'
+}
+
+# 替代 grep -oE 'initcwnd [0-9]+' | awk '{print $2}'
+# 用法: route_get_cwnd <route_line>
+route_get_cwnd() {
+    echo "$1" | grep -oE 'initcwnd [0-9]+' | awk '{print $2}'
+}
+
+# 检测服务管理器并重启 SSH
+restart_ssh() {
+    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+        systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+    elif command -v rc-service &>/dev/null; then
+        rc-service sshd restart 2>/dev/null || rc-service ssh restart 2>/dev/null
+    elif command -v service &>/dev/null; then
+        service ssh restart 2>/dev/null || service sshd restart 2>/dev/null
+    else
+        return 1
+    fi
+}
+
+# 检测服务管理器并重启 fail2ban
+restart_fail2ban() {
+    if command -v systemctl &>/dev/null; then
+        systemctl restart fail2ban 2>/dev/null
+    elif command -v rc-service &>/dev/null; then
+        rc-service fail2ban restart 2>/dev/null
+    else
+        service fail2ban restart 2>/dev/null
+    fi
+}
+
+# 检测服务管理器并启动/停止 fail2ban
+start_fail2ban()  {
+    command -v systemctl &>/dev/null && systemctl start  fail2ban 2>/dev/null     || { command -v rc-service &>/dev/null && rc-service fail2ban start  2>/dev/null; }     || service fail2ban start  2>/dev/null
+}
+stop_fail2ban()   {
+    command -v systemctl &>/dev/null && systemctl stop   fail2ban 2>/dev/null     || { command -v rc-service &>/dev/null && rc-service fail2ban stop   2>/dev/null; }     || service fail2ban stop   2>/dev/null
+}
+
+# 检测 grep 是否支持 -P
+grep_has_P() {
+    echo "" | grep -P "" &>/dev/null && echo "yes" || echo "no"
+}
+
+
+# ── 系统检测工具 ──────────────────────────────────────────
+
+# 检测包管理器
+pkg_install() {
+    local PKG="$1"
+    if command -v apt-get &>/dev/null; then
+        apt-get update -qq 2>/dev/null
+        apt-get install -y "$PKG" 2>/dev/null
+    elif command -v apk &>/dev/null; then
+        apk add --no-cache "$PKG" 2>/dev/null
+    elif command -v yum &>/dev/null; then
+        yum install -y "$PKG" 2>/dev/null
+    elif command -v dnf &>/dev/null; then
+        dnf install -y "$PKG" 2>/dev/null
+    elif command -v pacman &>/dev/null; then
+        pacman -Sy --noconfirm "$PKG" 2>/dev/null
+    else
+        return 1
+    fi
+}
+
+pkg_remove() {
+    local PKG="$1"
+    if command -v apt-get &>/dev/null; then
+        apt-get remove -y "$PKG" 2>/dev/null
+    elif command -v apk &>/dev/null; then
+        apk del "$PKG" 2>/dev/null
+    elif command -v yum &>/dev/null; then
+        yum remove -y "$PKG" 2>/dev/null
+    elif command -v dnf &>/dev/null; then
+        dnf remove -y "$PKG" 2>/dev/null
+    else
+        return 1
+    fi
+}
+
+# 通用服务启用（开机自启）
+svc_enable() {
+    local SVC="$1"
+    if command -v systemctl &>/dev/null; then
+        systemctl enable "$SVC" --quiet 2>/dev/null
+    elif command -v rc-update &>/dev/null; then
+        rc-update add "$SVC" default 2>/dev/null
+    elif command -v update-rc.d &>/dev/null; then
+        update-rc.d "$SVC" enable 2>/dev/null
+    fi
+}
+
+svc_disable() {
+    local SVC="$1"
+    if command -v systemctl &>/dev/null; then
+        systemctl disable "$SVC" --quiet 2>/dev/null
+    elif command -v rc-update &>/dev/null; then
+        rc-update del "$SVC" 2>/dev/null
+    fi
+}
+
+# 通用服务 is-active 检测
+svc_is_active() {
+    local SVC="$1"
+    if command -v systemctl &>/dev/null; then
+        systemctl is-active --quiet "$SVC" 2>/dev/null
+    elif command -v rc-service &>/dev/null; then
+        rc-service "$SVC" status &>/dev/null
+    elif command -v service &>/dev/null; then
+        service "$SVC" status &>/dev/null
+    else
+        return 1
+    fi
+}
+
+# systemctl daemon-reload 兼容（OpenRC 不需要）
+svc_daemon_reload() {
+    command -v systemctl &>/dev/null && systemctl daemon-reload 2>/dev/null || true
+}
+
+# 获取 OS codename（兼容无 lsb_release 的系统）
+get_codename() {
+    if command -v lsb_release &>/dev/null; then
+        lsb_release -cs 2>/dev/null
+    elif [ -f /etc/os-release ]; then
+        grep VERSION_CODENAME /etc/os-release | cut -d= -f2 | tr -d '"'
+    elif [ -f /etc/debian_version ]; then
+        cat /etc/debian_version | cut -d. -f1
+    else
+        echo "unknown"
+    fi
+}
+
+# mapfile 兼容（Alpine ash 不支持 mapfile）
+read_array() {
+    # 用法: read_array ARRAY_NAME < <(command)
+    # 改为: read_array_from "ARRAY_NAME" "$(command)"
+    local -n _arr="$1"
+    _arr=()
+    while IFS= read -r line; do
+        _arr+=("$line")
+    done
+}
+
+# fail2ban 日志文件路径检测
+f2b_log_file() {
+    if [ -f /var/log/fail2ban.log ]; then
+        echo "/var/log/fail2ban.log"
+    elif [ -f /var/log/fail2ban/fail2ban.log ]; then
+        echo "/var/log/fail2ban/fail2ban.log"
+    else
+        echo ""
+    fi
+}
+
 # ── 权限检查 ──────────────────────────────────────────────
 if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}[ERROR]${NC} 请使用 root 权限运行：sudo bash $0"
@@ -110,10 +274,10 @@ apply_and_restart() {
         error "配置文件语法错误，已取消应用"
         return 1
     fi
-    if systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null; then
+    if restart_ssh; then
         info "SSH 服务已重启 ✓"
     else
-        error "SSH 服务重启失败，请手动执行：systemctl restart ssh"
+        error "SSH 服务重启失败，请手动执行：systemctl restart ssh 或 rc-service sshd restart"
         return 1
     fi
 }
@@ -145,7 +309,7 @@ firewall_allow_port() {
     local UFW_ACTIVE=false FIREWALLD_ACTIVE=false IPTABLES_ACTIVE=false
 
     command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active" && UFW_ACTIVE=true
-    command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld 2>/dev/null && FIREWALLD_ACTIVE=true
+    command -v firewall-cmd &>/dev/null && svc_is_active firewalld && FIREWALLD_ACTIVE=true
     if command -v iptables &>/dev/null; then
         local RULES
         RULES=$(iptables -L INPUT --line-numbers 2>/dev/null             | grep -v "^Chain\|^num\|^$\|ACCEPT.*all.*anywhere.*anywhere" | wc -l)
@@ -444,7 +608,7 @@ change_port() {
 f2b_status() {
     if ! command -v fail2ban-client &>/dev/null; then
         echo "not_installed"
-    elif systemctl is-active --quiet fail2ban 2>/dev/null; then
+    elif svc_is_active fail2ban 2>/dev/null; then
         echo "running"
     else
         echo "stopped"
@@ -455,10 +619,8 @@ f2b_status() {
 f2b_install() {
     print_header "安装 Fail2ban"
     info "正在更新软件包列表..."
-    apt-get update -qq 2>/dev/null || yum makecache -q 2>/dev/null || true
-
     info "正在安装 fail2ban..."
-    if apt-get install -y fail2ban 2>/dev/null || yum install -y fail2ban 2>/dev/null; then
+    if pkg_install fail2ban; then
         # 创建基础 jail.local（如果不存在）
         if [ ! -f /etc/fail2ban/jail.local ]; then
             cat > /etc/fail2ban/jail.local << 'JAILEOF'
@@ -475,8 +637,8 @@ logpath  = %(sshd_log)s
 JAILEOF
             info "已创建默认配置 /etc/fail2ban/jail.local"
         fi
-        systemctl enable fail2ban --quiet 2>/dev/null
-        systemctl start fail2ban 2>/dev/null
+        svc_enable fail2ban
+        start_fail2ban
         info "Fail2ban 安装并启动成功 ✓"
     else
         error "安装失败，请检查网络或手动安装：apt install fail2ban"
@@ -558,7 +720,7 @@ f2b_config_params() {
 
     echo ""
     info "重启 Fail2ban 使配置生效..."
-    systemctl restart fail2ban 2>/dev/null && info "Fail2ban 已重启 ✓" || error "重启失败"
+    restart_fail2ban && info "Fail2ban 已重启 ✓" || error "重启失败"
 }
 
 # 写入参数到 jail.local
@@ -648,8 +810,8 @@ f2b_uninstall() {
     [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
 
     systemctl stop fail2ban 2>/dev/null
-    systemctl disable fail2ban 2>/dev/null
-    if apt-get remove -y fail2ban 2>/dev/null || yum remove -y fail2ban 2>/dev/null; then
+    svc_disable fail2ban
+    if pkg_remove fail2ban; then
         info "Fail2ban 已卸载 ✓"
     else
         error "卸载失败，请手动执行：apt remove fail2ban"
@@ -734,9 +896,9 @@ fail2ban_menu() {
             6) f2b_uninstall ;;
             7)
                 if [ "$F2B_ST" = "running" ]; then
-                    systemctl stop fail2ban && info "Fail2ban 已停止" || error "停止失败"
+                    stop_fail2ban && info "Fail2ban 已停止" || error "停止失败"
                 else
-                    systemctl start fail2ban && info "Fail2ban 已启动" || error "启动失败"
+                    start_fail2ban && info "Fail2ban 已启动" || error "启动失败"
                 fi
                 sleep 1; continue
                 ;;
@@ -875,10 +1037,10 @@ SYSCTL_FILE="/etc/sysctl.conf"
 # ── 状态显示 ──────────────────────────────────────────────
 bbr_print_status() {
     local DEV; DEV=$(ip route | awk '/^default/{print $5}')
-    local RATE; RATE=$(tc qdisc show dev "$DEV" 2>/dev/null | grep -oP '(?:maxrate|rate) \K\S+' | head -1)
+    local RATE; RATE=$(tc qdisc show dev "$DEV" 2>/dev/null | grep -oE '(maxrate|rate) [^ ]+' | head -1 | awk '{print $2}')
     [ -z "$RATE" ] && RATE="未设置"
     local BBR; BBR=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
-    local CWND; CWND=$(ip route show | grep "^default" | grep -oP 'initcwnd \K\d+' || echo "10")
+    local CWND; CWND=$(ip route show | grep "^default" | grep -oE 'initcwnd [0-9]+' | awk '{print $2}' || echo "10")
 
     # 读取缓冲区大小
     local RMEM_MAX WMEM_MAX RMEM_MB WMEM_MB
@@ -911,7 +1073,8 @@ bbr_backup_sysctl() {
 bbr_restore_sysctl() {
     print_header "还原 sysctl.conf"
     local BACKUPS=()
-    mapfile -t BACKUPS < <(ls -t "${SYSCTL_FILE}.bak."* 2>/dev/null)
+    local BACKUPS=()
+    while IFS= read -r _bline; do BACKUPS+=("$_bline"); done < <(ls -t "${SYSCTL_FILE}.bak."* 2>/dev/null)
     if [ ${#BACKUPS[@]} -eq 0 ]; then
         warn "未找到任何备份文件"
         return
@@ -989,9 +1152,9 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
     fi
-    systemctl daemon-reload
-    systemctl enable tc-fq &>/dev/null
-    systemctl restart tc-fq
+    svc_daemon_reload
+    svc_enable tc-fq
+    rc-service tc-fq restart 2>/dev/null || systemctl restart tc-fq 2>/dev/null || true
     info "tc 限速已应用：${RATE}Mbps ✓"
 }
 
@@ -1240,7 +1403,7 @@ bbr_menu_tc() {
     local TX_Q; TX_Q=$(ls /sys/class/net/"$DEV"/queues/ 2>/dev/null | grep "^tx-" | wc -l)
     local IS_MQ=0
     { tc qdisc show dev "$DEV" 2>/dev/null | grep -q "qdisc mq" || [ "$TX_Q" -gt 1 ]; } && IS_MQ=1
-    local CUR; CUR=$(tc qdisc show dev "$DEV" 2>/dev/null | grep -oP '(?:maxrate|rate) \K\S+' | head -1)
+    local CUR; CUR=$(tc qdisc show dev "$DEV" 2>/dev/null | grep -oE '(maxrate|rate) [^ ]+' | head -1 | awk '{print $2}')
     [ -z "$CUR" ] && CUR="未设置"
 
     echo -e "  网卡：${BOLD}${DEV}${NC}  类型：${BOLD}$([ "$IS_MQ" -eq 1 ] && echo "mq多队列" || echo "单队列")${NC}  当前限速：${BOLD}${CUR}${NC}"
@@ -1285,9 +1448,9 @@ bbr_menu_tc() {
         else
             tc qdisc del dev "$DEV" root 2>/dev/null
         fi
-        systemctl disable tc-fq &>/dev/null
+        svc_disable tc-fq
         rm -f "$SERVICE_TC"
-        systemctl daemon-reload
+        svc_daemon_reload
         info "已取消限速 ✓"
     else
         bbr_apply_tc "$RATE"
@@ -1301,7 +1464,7 @@ bbr_menu_initcwnd() {
     DEV=$(ip route | awk '/^default/{print $5}')
     GW=$(ip route | awk '/^default/{print $3}')
     ONLINK=$(ip route | grep "^default" | grep -q "onlink" && echo "onlink" || echo "")
-    local CUR; CUR=$(ip route show | grep "^default" | grep -oP 'initcwnd \K\d+' || echo "10")
+    local CUR; CUR=$(ip route show | grep "^default" | grep -oE 'initcwnd [0-9]+' | awk '{print $2}' || echo "10")
 
     echo -e "  网卡：${BOLD}${DEV}${NC}  网关：${BOLD}${GW}${NC}  当前 initcwnd：${BOLD}${CUR}${NC}"
     echo ""
@@ -1348,9 +1511,9 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
-    systemctl enable initcwnd &>/dev/null
-    systemctl restart initcwnd
+    svc_daemon_reload
+    svc_enable initcwnd
+    rc-service initcwnd restart 2>/dev/null || systemctl restart initcwnd 2>/dev/null || true
     info "initcwnd 已设置为 ${VAL}，重启后自动生效 ✓"
 }
 
@@ -1411,7 +1574,7 @@ fw_running() {
     local TYPE="$1"
     case "$TYPE" in
         ufw)      ufw status 2>/dev/null | grep -q "Status: active" && echo "active" || echo "inactive" ;;
-        firewalld) systemctl is-active --quiet firewalld 2>/dev/null && echo "active" || echo "inactive" ;;
+        firewalld) svc_is_active firewalld && echo "active" || echo "inactive" ;;
         *) echo "none" ;;
     esac
 }
@@ -1421,21 +1584,20 @@ fw_install() {
     local TYPE="$1"
     print_header "安装防火墙"
     info "正在更新软件包列表..."
-    apt-get update -qq 2>/dev/null || yum makecache -q 2>/dev/null || true
-
     case "$TYPE" in
         ufw)
-            if apt-get install -y ufw 2>/dev/null; then
+            if pkg_install ufw; then
                 info "ufw 安装成功 ✓"
                 ufw --force enable
                 info "ufw 已启用 ✓"
             else
-                error "安装失败，请检查网络或手动安装：apt install ufw"
+                error "安装失败，请检查网络或手动安装：apt/apk install ufw"
             fi
             ;;
         firewalld)
-            if yum install -y firewalld 2>/dev/null || apt-get install -y firewalld 2>/dev/null; then
-                systemctl enable --now firewalld
+            if pkg_install firewalld; then
+                svc_enable firewalld
+                rc-service firewalld start 2>/dev/null || systemctl start firewalld 2>/dev/null
                 info "firewalld 安装并启动成功 ✓"
             else
                 error "安装失败，请检查网络或手动安装"
@@ -1940,7 +2102,7 @@ mirror_backup() {
 
 mirror_apply_ubuntu() {
     local MIRROR="$1"
-    local CODENAME; CODENAME=$(lsb_release -cs 2>/dev/null || grep VERSION_CODENAME /etc/os-release | cut -d= -f2)
+    local CODENAME; CODENAME=$(get_codename)
     mirror_backup "/etc/apt/sources.list"
     cat > /etc/apt/sources.list << EOF
 deb ${MIRROR} ${CODENAME} main restricted universe multiverse
@@ -1949,12 +2111,12 @@ deb ${MIRROR} ${CODENAME}-backports main restricted universe multiverse
 deb ${MIRROR} ${CODENAME}-security main restricted universe multiverse
 EOF
     info "已切换 Ubuntu 源 → $MIRROR"
-    apt-get update -qq && info "apt update 完成 ✓" || warn "apt update 出现警告，请检查"
+    apt-get update -qq 2>/dev/null && info "apt update 完成 ✓" || warn "apt update 出现警告，请检查"
 }
 
 mirror_apply_debian() {
     local MIRROR="$1"
-    local CODENAME; CODENAME=$(lsb_release -cs 2>/dev/null || grep VERSION_CODENAME /etc/os-release | cut -d= -f2)
+    local CODENAME; CODENAME=$(get_codename)
     mirror_backup "/etc/apt/sources.list"
     cat > /etc/apt/sources.list << EOF
 deb ${MIRROR} ${CODENAME} main contrib non-free non-free-firmware
@@ -1963,7 +2125,7 @@ deb ${MIRROR} ${CODENAME}-backports main contrib non-free non-free-firmware
 deb ${MIRROR}-security ${CODENAME}-security main contrib non-free non-free-firmware
 EOF
     info "已切换 Debian 源 → $MIRROR"
-    apt-get update -qq && info "apt update 完成 ✓" || warn "apt update 出现警告，请检查"
+    apt-get update -qq 2>/dev/null && info "apt update 完成 ✓" || warn "apt update 出现警告，请检查"
 }
 
 mirror_apply_centos() {
@@ -2299,7 +2461,7 @@ main_menu() {
             FW_STAT="${FW_TYPE} inactive"; FW_COLOR="$RED"
         fi
         local BBR_CC; BBR_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
-        local TC_RATE; TC_RATE=$(tc qdisc show dev "$(ip route | awk '/^default/{print $5}')" 2>/dev/null | grep -oP '(?:maxrate|rate) \K\S+' | head -1); [ -z "$TC_RATE" ] && TC_RATE="无限速"
+        local TC_RATE; TC_RATE=$(tc qdisc show dev "$(ip route | awk '/^default/{print $5}')" 2>/dev/null | grep -oE '(maxrate|rate) [^ ]+' | head -1 | awk '{print $2}'); [ -z "$TC_RATE" ] && TC_RATE="无限速"
         box_line "  BBR: ${BBR_CC}  |  限速: ${TC_RATE}" "  BBR: ${BOLD}${BBR_CC}${NC}  |  限速: ${BOLD}${TC_RATE}${NC}"
         box_line "  防火墙: ${FW_STAT}" "  防火墙: ${FW_COLOR}${BOLD}${FW_STAT}${NC}"
         box_sep
