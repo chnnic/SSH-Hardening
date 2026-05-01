@@ -34,9 +34,9 @@ print(sum(2 if unicodedata.east_asian_width(c) in ('W','F') else 1 for c in s))
 BOX_W=42   # 总宽含两侧 ║
 
 # 顶/底/分隔线
-box_top() { printf "${BOLD}${CYAN}╔"; printf '═%.0s' $(seq 1 $((BOX_W-2))); printf "╗${NC}\n"; }
-box_bot() { printf "${BOLD}${CYAN}╚"; printf '═%.0s' $(seq 1 $((BOX_W-2))); printf "╝${NC}\n"; }
-box_sep() { printf "${BOLD}${CYAN}╠"; printf '═%.0s' $(seq 1 $((BOX_W-2))); printf "╣${NC}\n"; }
+box_top() { printf "${CYAN}"; printf '═%.0s' $(seq 1 $((BOX_W-2))); printf "${NC}\n"; }
+box_bot() { printf "${CYAN}"; printf '═%.0s' $(seq 1 $((BOX_W-2))); printf "${NC}\n"; }
+box_sep() { printf "${CYAN}"; printf '─%.0s' $(seq 1 $((BOX_W-2))); printf "${NC}\n"; }
 
 # 居中标题行（只传纯文本，自动居中）
 box_title() {
@@ -46,11 +46,10 @@ box_title() {
     local PAD_TOTAL=$(( INNER - LEN ))
     local PAD_L=$(( PAD_TOTAL / 2 ))
     local PAD_R=$(( PAD_TOTAL - PAD_L ))
-    printf "${BOLD}${CYAN}║${NC}"
     printf '%*s' "$PAD_L" ''
     printf "${BOLD}${CYAN}%s${NC}" "$TEXT"
     printf '%*s' "$PAD_R" ''
-    printf "${BOLD}${CYAN}║${NC}\n"
+    printf "\n"
 }
 
 # 普通内容行：PLAIN=纯文本(算宽度)  COLORED=带色码(显示用)
@@ -58,21 +57,12 @@ box_title() {
 box_line() {
     local PLAIN="$1"
     local COLORED="${2:-$1}"
-    local LEN; LEN=$(vis_len "$PLAIN")
-    local INNER=$((BOX_W - 2))
-    local PAD=$(( INNER - LEN ))
-    [ "$PAD" -lt 0 ] && PAD=0
-    printf "${BOLD}${CYAN}║${NC}"
-    echo -ne "$COLORED"
-    printf '%*s' "$PAD" ''
-    printf "${BOLD}${CYAN}║${NC}\n"
+    echo -e "$COLORED"
 }
 
 # 空行
 box_empty() {
-    printf "${BOLD}${CYAN}║${NC}"
-    printf '%*s' "$((BOX_W-2))" ''
-    printf "${BOLD}${CYAN}║${NC}\n"
+    echo ""
 }
 
 # 统一标题栏
