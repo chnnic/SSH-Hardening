@@ -108,21 +108,44 @@ restart_ssh() {
 
 # 检测服务管理器并重启 fail2ban
 restart_fail2ban() {
-    if command -v systemctl &>/dev/null; then
-        systemctl restart fail2ban 2>/dev/null
-    elif command -v rc-service &>/dev/null; then
-        rc-service fail2ban restart 2>/dev/null
-    else
-        service fail2ban restart 2>/dev/null
+    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+        systemctl restart fail2ban 2>/dev/null && return 0
     fi
+    if command -v rc-service &>/dev/null; then
+        rc-service fail2ban restart 2>/dev/null && return 0
+    fi
+    if command -v service &>/dev/null; then
+        service fail2ban restart 2>/dev/null && return 0
+    fi
+    [ -x /etc/init.d/fail2ban ] && /etc/init.d/fail2ban restart 2>/dev/null
 }
 
 # 检测服务管理器并启动/停止 fail2ban
-start_fail2ban()  {
-    command -v systemctl &>/dev/null && systemctl start  fail2ban 2>/dev/null     || { command -v rc-service &>/dev/null && rc-service fail2ban start  2>/dev/null; }     || service fail2ban start  2>/dev/null
+start_fail2ban() {
+    # 优先尝试 systemctl，失败则回退 service / rc-service
+    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+        systemctl start fail2ban 2>/dev/null && return 0
+    fi
+    if command -v rc-service &>/dev/null; then
+        rc-service fail2ban start 2>/dev/null && return 0
+    fi
+    if command -v service &>/dev/null; then
+        service fail2ban start 2>/dev/null && return 0
+    fi
+    # 最后回退：直接调用 init.d 脚本
+    [ -x /etc/init.d/fail2ban ] && /etc/init.d/fail2ban start 2>/dev/null
 }
-stop_fail2ban()   {
-    command -v systemctl &>/dev/null && systemctl stop   fail2ban 2>/dev/null     || { command -v rc-service &>/dev/null && rc-service fail2ban stop   2>/dev/null; }     || service fail2ban stop   2>/dev/null
+stop_fail2ban() {
+    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+        systemctl stop fail2ban 2>/dev/null && return 0
+    fi
+    if command -v rc-service &>/dev/null; then
+        rc-service fail2ban stop 2>/dev/null && return 0
+    fi
+    if command -v service &>/dev/null; then
+        service fail2ban stop 2>/dev/null && return 0
+    fi
+    [ -x /etc/init.d/fail2ban ] && /etc/init.d/fail2ban stop 2>/dev/null
 }
 
 # 检测 grep 是否支持 -P
@@ -170,8 +193,9 @@ pkg_remove() {
 # 通用服务启用（开机自启）
 svc_enable() {
     local SVC="$1"
-    if command -v systemctl &>/dev/null; then
-        systemctl enable "$SVC" --quiet 2>/dev/null
+    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+        systemctl unmask "$SVC" 2>/dev/null || true
+        systemctl enable "$SVC" --quiet 2>/dev/null || true
     elif command -v rc-update &>/dev/null; then
         rc-update add "$SVC" default 2>/dev/null
     elif command -v update-rc.d &>/dev/null; then
@@ -648,22 +672,33 @@ logpath  = %(sshd_log)s
 JAILEOF
             info "已创建默认配置 /etc/fail2ban/jail.local（backend=${BACKEND}）"
         fi
+        # Debian/Ubuntu 可能存在 unit 被 mask 的问题，强制 unmask
+        if command -v systemctl &>/dev/null; then
+            systemctl unmask fail2ban 2>/dev/null || true
+            systemctl daemon-reload 2>/dev/null || true
+        fi
+
         svc_enable fail2ban
-        # 等待服务完全启动
         sleep 1
         start_fail2ban
         sleep 2
-        # 验证是否真的启动了
+
+        # 验证是否真正启动
         if fail2ban-client ping &>/dev/null 2>&1; then
             info "Fail2ban 安装并启动成功 ✓"
         else
-            warn "服务可能未完全启动，尝试重启..."
+            warn "首次启动失败，尝试强制重启..."
+            systemctl unmask fail2ban 2>/dev/null || true
+            systemctl enable fail2ban 2>/dev/null || true
             systemctl restart fail2ban 2>/dev/null                 || rc-service fail2ban restart 2>/dev/null                 || true
-            sleep 2
+            sleep 3
             if fail2ban-client ping &>/dev/null 2>&1; then
                 info "Fail2ban 启动成功 ✓"
             else
-                error "启动失败，请查看日志：journalctl -u fail2ban -n 20"
+                error "启动失败，请手动执行以下命令排查："
+                echo -e "  ${DIM}systemctl unmask fail2ban${NC}"
+                echo -e "  ${DIM}systemctl enable --now fail2ban${NC}"
+                echo -e "  ${DIM}journalctl -u fail2ban -n 30${NC}"
             fi
         fi
     else
