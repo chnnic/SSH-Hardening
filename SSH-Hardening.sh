@@ -745,7 +745,7 @@ fail2ban_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        echo ""; read -rp "  按 Enter 返回..." _
+        [ "${CHOICE}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
     done
 }
 
@@ -1369,8 +1369,7 @@ bbr_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        echo ""
-        read -rp "  按 Enter 返回..." _
+        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
     done
 }
 
@@ -1566,8 +1565,7 @@ ufw_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        echo ""
-        read -rp "  按 Enter 返回..." _
+        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
     done
 }
 
@@ -1720,8 +1718,7 @@ fwd_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        echo ""
-        read -rp "  按 Enter 返回..." _
+        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
     done
 }
 
@@ -1789,6 +1786,7 @@ ssh_tools_menu() {
         echo ""
         read -rp "  请选择 [0-6]: " CHOICE
 
+        local NEED_PAUSE=1
         case "$CHOICE" in
             1) show_keys ;;
             2) add_key ;;
@@ -1798,11 +1796,10 @@ ssh_tools_menu() {
             6) change_port ;;
             0) return ;;
             00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
-            *) warn "无效选项"; sleep 1; continue ;;
+            *) warn "无效选项"; sleep 1; NEED_PAUSE=0 ;;
         esac
 
-        echo ""
-        read -rp "  按 Enter 返回..." _
+        [ "$NEED_PAUSE" -eq 1 ] && { echo ""; read -rp "  按 Enter 返回..." _; }
     done
 }
 
@@ -1901,8 +1898,7 @@ dns_menu() {
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        echo ""
-        read -rp "  按 Enter 返回..." _
+        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
     done
 }
 
@@ -2053,8 +2049,7 @@ mirror_menu() {
                 ;;
         esac
 
-        echo ""
-        read -rp "  按 Enter 返回..." _
+        [ "${CH:-x}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
     done
 }
 
