@@ -483,6 +483,179 @@ JAILEOF
     fi
 }
 
+# ── 基础参数配置 ──────────────────────────────────────────
+f2b_config_params() {
+    print_header "Fail2ban 基础参数配置"
+    local JAIL_LOCAL="/etc/fail2ban/jail.local"
+
+    # 读取当前值
+    local CUR_BAN CUR_FIND CUR_MAX
+    CUR_BAN=$(grep -E "^bantime\s*=" "$JAIL_LOCAL" 2>/dev/null | tail -1 | awk -F= '{gsub(/ /,"",$2); print $2}')
+    CUR_FIND=$(grep -E "^findtime\s*=" "$JAIL_LOCAL" 2>/dev/null | tail -1 | awk -F= '{gsub(/ /,"",$2); print $2}')
+    CUR_MAX=$(grep -E "^maxretry\s*=" "$JAIL_LOCAL" 2>/dev/null | tail -1 | awk -F= '{gsub(/ /,"",$2); print $2}')
+    [ -z "$CUR_BAN"  ] && CUR_BAN="3600"
+    [ -z "$CUR_FIND" ] && CUR_FIND="600"
+    [ -z "$CUR_MAX"  ] && CUR_MAX="5"
+
+    echo -e "  当前配置："
+    echo -e "  封禁时长  (bantime)  : ${BOLD}${CUR_BAN}${NC} 秒  $(( CUR_BAN / 60 )) 分钟"
+    echo -e "  时间窗口  (findtime) : ${BOLD}${CUR_FIND}${NC} 秒  $(( CUR_FIND / 60 )) 分钟"
+    echo -e "  最大重试  (maxretry) : ${BOLD}${CUR_MAX}${NC} 次"
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${GREEN}1${NC}) 修改封禁时长   (bantime)"
+    echo -e "  ${GREEN}2${NC}) 修改时间窗口   (findtime)"
+    echo -e "  ${GREEN}3${NC}) 修改最大重试次数 (maxretry)"
+    echo -e "  ${GREEN}4${NC}) 快速预设"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo -e "  ${RED}00${NC}) 退出脚本"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    read -rp "  请选择 [0-4]: " CH
+
+    case "$CH" in
+        1)
+            echo ""
+            echo -e "  常用参考：3600=1小时  86400=1天  604800=7天  -1=永久"
+            read -rp "  请输入新的 bantime（秒）: " VAL
+            [[ "$VAL" =~ ^-?[0-9]+$ ]] || { error "无效数值"; return; }
+            f2b_set_param "bantime" "$VAL"
+            ;;
+        2)
+            echo ""
+            echo -e "  常用参考：300=5分钟  600=10分钟  3600=1小时"
+            read -rp "  请输入新的 findtime（秒）: " VAL
+            [[ "$VAL" =~ ^[0-9]+$ ]] || { error "无效数值"; return; }
+            f2b_set_param "findtime" "$VAL"
+            ;;
+        3)
+            echo ""
+            echo -e "  常用参考：3=严格  5=默认  10=宽松"
+            read -rp "  请输入新的 maxretry（次）: " VAL
+            [[ "$VAL" =~ ^[0-9]+$ ]] || { error "无效数值"; return; }
+            f2b_set_param "maxretry" "$VAL"
+            ;;
+        4)
+            echo ""
+            echo -e "  ${GREEN}1${NC}) 严格模式  — 封禁1天  窗口10分钟  最多3次"
+            echo -e "  ${GREEN}2${NC}) 标准模式  — 封禁1小时 窗口10分钟  最多5次"
+            echo -e "  ${GREEN}3${NC}) 宽松模式  — 封禁30分钟 窗口5分钟  最多10次"
+            echo -e "  ${GREEN}4${NC}) 永久封禁  — 封禁永久  窗口10分钟  最多3次"
+            echo ""
+            read -rp "  请选择预设 [1-4]: " PRESET
+            case "$PRESET" in
+                1) f2b_set_param "bantime" "86400";  f2b_set_param "findtime" "600"; f2b_set_param "maxretry" "3" ;;
+                2) f2b_set_param "bantime" "3600";   f2b_set_param "findtime" "600"; f2b_set_param "maxretry" "5" ;;
+                3) f2b_set_param "bantime" "1800";   f2b_set_param "findtime" "300"; f2b_set_param "maxretry" "10" ;;
+                4) f2b_set_param "bantime" "-1";     f2b_set_param "findtime" "600"; f2b_set_param "maxretry" "3" ;;
+                *) warn "无效选项"; return ;;
+            esac
+            ;;
+        0) return ;;
+        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        *) warn "无效选项"; return ;;
+    esac
+
+    echo ""
+    info "重启 Fail2ban 使配置生效..."
+    systemctl restart fail2ban 2>/dev/null && info "Fail2ban 已重启 ✓" || error "重启失败"
+}
+
+# 写入参数到 jail.local
+f2b_set_param() {
+    local KEY="$1" VAL="$2"
+    local JAIL_LOCAL="/etc/fail2ban/jail.local"
+
+    # 确保文件存在且有 [DEFAULT] 节
+    if [ ! -f "$JAIL_LOCAL" ]; then
+        echo -e "[DEFAULT]" > "$JAIL_LOCAL"
+    fi
+    if ! grep -q "^\[DEFAULT\]" "$JAIL_LOCAL"; then
+        sed -i "1i [DEFAULT]" "$JAIL_LOCAL"
+    fi
+
+    if grep -qE "^${KEY}\s*=" "$JAIL_LOCAL"; then
+        sed -i "s|^${KEY}\s*=.*|${KEY} = ${VAL}|" "$JAIL_LOCAL"
+    else
+        sed -i "/^\[DEFAULT\]/a ${KEY} = ${VAL}" "$JAIL_LOCAL"
+    fi
+    info "${KEY} 已设置为 ${VAL} ✓"
+}
+
+# ── 编辑配置文件 ──────────────────────────────────────────
+f2b_edit_config() {
+    print_header "编辑 Fail2ban 配置文件"
+    local JAIL_LOCAL="/etc/fail2ban/jail.local"
+    local JAIL_CONF="/etc/fail2ban/jail.conf"
+
+    echo -e "  ${GREEN}1${NC}) 编辑 jail.local  ${YELLOW}（推荐，用户自定义配置）${NC}"
+    echo -e "  ${GREEN}2${NC}) 查看 jail.conf    ${DIM}（系统默认配置，只读参考）${NC}"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo -e "  ${RED}00${NC}) 退出脚本"
+    echo ""
+    read -rp "  请选择 [0-2]: " CH
+
+    case "$CH" in
+        1)
+            if [ ! -f "$JAIL_LOCAL" ]; then
+                warn "jail.local 不存在，正在创建默认模板..."
+                cat > "$JAIL_LOCAL" << 'JAILEOF'
+[DEFAULT]
+bantime  = 3600
+findtime = 600
+maxretry = 5
+backend  = auto
+
+[sshd]
+enabled  = true
+port     = ssh
+logpath  = %(sshd_log)s
+JAILEOF
+                info "已创建 $JAIL_LOCAL"
+            fi
+            echo ""
+            warn "即将用 nano 打开 $JAIL_LOCAL"
+            warn "编辑完成后按 Ctrl+O 保存，Ctrl+X 退出"
+            echo ""
+            read -rp "  按 Enter 继续..." _
+            nano "$JAIL_LOCAL"
+            echo ""
+            read -rp "  是否重启 Fail2ban 使配置生效？(yes/no): " RESTART
+            [ "$RESTART" = "yes" ] && systemctl restart fail2ban && info "Fail2ban 已重启 ✓"
+            ;;
+        2)
+            if [ -f "$JAIL_CONF" ]; then
+                echo ""
+                echo -e "  ${DIM}--- $JAIL_CONF（只读）---${NC}"
+                echo ""
+                less "$JAIL_CONF"
+            else
+                warn "$JAIL_CONF 不存在"
+            fi
+            ;;
+        0) return ;;
+        00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+        *) warn "无效选项" ;;
+    esac
+}
+
+# ── 卸载 Fail2ban ─────────────────────────────────────────
+f2b_uninstall() {
+    print_header "卸载 Fail2ban"
+    warn "即将卸载 Fail2ban，所有配置将被清除！"
+    echo ""
+    read -rp "  确认卸载？(yes/no): " CONFIRM
+    [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
+
+    systemctl stop fail2ban 2>/dev/null
+    systemctl disable fail2ban 2>/dev/null
+    if apt-get remove -y fail2ban 2>/dev/null || yum remove -y fail2ban 2>/dev/null; then
+        info "Fail2ban 已卸载 ✓"
+    else
+        error "卸载失败，请手动执行：apt remove fail2ban"
+    fi
+}
+
 # ── Fail2ban 主菜单 ───────────────────────────────────────
 fail2ban_menu() {
     while true; do
@@ -538,21 +711,28 @@ fail2ban_menu() {
         box_line "  1) 查看封禁 IP 列表" "  ${GREEN}1${NC}) 查看封禁 IP 列表"
         box_line "  2) 手动解封 IP"      "  ${GREEN}2${NC}) 手动解封 IP"
         box_line "  3) 实时日志"         "  ${GREEN}3${NC}) 实时日志"
+        box_line "  4) 基础参数配置"     "  ${GREEN}4${NC}) 基础参数配置"
+        box_line "  5) 编辑配置文件"     "  ${GREEN}5${NC}) 编辑配置文件"
+        box_line "  6) 卸载 Fail2ban"    "  ${YELLOW}6${NC}) 卸载 Fail2ban"
         if [ "$F2B_ST" = "running" ]; then
-            box_line "  4) 停止服务"     "  ${YELLOW}4${NC}) 停止服务"
+            box_line "  7) 停止服务"     "  ${YELLOW}7${NC}) 停止服务"
         else
-            box_line "  4) 启动服务"     "  ${GREEN}4${NC}) 启动服务"
+            box_line "  7) 启动服务"     "  ${GREEN}7${NC}) 启动服务"
         fi
         box_line "  0) 返回主菜单"       "  ${RED}0${NC}) 返回主菜单"
+        box_line "  00) 退出脚本"        "  ${RED}00${NC}) 退出脚本"
         box_bot
         echo ""
-        read -rp "  请选择 [0-4]: " CHOICE
+        read -rp "  请选择 [0-7]: " CHOICE
 
         case "$CHOICE" in
             1) f2b_banned_list "$JAIL_NAME" ;;
             2) f2b_unban "$JAIL_NAME" ;;
             3) f2b_logs ;;
-            4)
+            4) f2b_config_params ;;
+            5) f2b_edit_config ;;
+            6) f2b_uninstall ;;
+            7)
                 if [ "$F2B_ST" = "running" ]; then
                     systemctl stop fail2ban && info "Fail2ban 已停止" || error "停止失败"
                 else
@@ -1581,6 +1761,51 @@ firewall_menu() {
     esac
 }
 
+# ── SSH 工具集子菜单 ──────────────────────────────────────
+ssh_tools_menu() {
+    while true; do
+        local CUR_PORT CUR_PWD CUR_PUBKEY KEYCOUNT
+        CUR_PORT=$(get_config "Port")
+        CUR_PWD=$(get_config "PasswordAuthentication")
+        CUR_PUBKEY=$(get_config "PubkeyAuthentication")
+        KEYCOUNT=$(grep -cE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|ssh-dss) ' "$AUTH_KEYS" 2>/dev/null || echo 0)
+
+        print_header "SSH 工具集"
+        box_line "  端口 ${CUR_PORT:-22}  |  公钥数 ${KEYCOUNT}" \
+                 "  端口 ${BOLD}${CUR_PORT:-22}${NC}  |  公钥数 ${BOLD}${KEYCOUNT}${NC}"
+        box_line "  密码登录 ${CUR_PWD:-未设置}  |  公钥认证 ${CUR_PUBKEY:-未设置}" \
+                 "  密码登录 ${BOLD}${CUR_PWD:-未设置}${NC}  |  公钥认证 ${BOLD}${CUR_PUBKEY:-未设置}${NC}"
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 查看已有公钥"
+        echo -e "  ${GREEN}2${NC}) 添加公钥"
+        echo -e "  ${GREEN}3${NC}) 删除公钥"
+        echo -e "  ${GREEN}4${NC}) 生成密钥对"
+        echo -e "  ${GREEN}5${NC}) 设置登录方式"
+        echo -e "  ${GREEN}6${NC}) 修改 SSH 端口"
+        echo -e "  ${RED}0${NC}) 返回主菜单"
+        echo -e "  ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo ""
+        read -rp "  请选择 [0-6]: " CHOICE
+
+        case "$CHOICE" in
+            1) show_keys ;;
+            2) add_key ;;
+            3) delete_key ;;
+            4) generate_key ;;
+            5) set_login_mode ;;
+            6) change_port ;;
+            0) return ;;
+            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+
+        echo ""
+        read -rp "  按 Enter 返回..." _
+    done
+}
+
 # ══════════════════════════════════════════════════════════
 #  主菜单
 # ══════════════════════════════════════════════════════════
@@ -1624,30 +1849,20 @@ main_menu() {
         box_line "  BBR: ${BBR_CC}  |  限速: ${TC_RATE}" "  BBR: ${BOLD}${BBR_CC}${NC}  |  限速: ${BOLD}${TC_RATE}${NC}"
         box_line "  防火墙: ${FW_STAT}" "  防火墙: ${FW_COLOR}${BOLD}${FW_STAT}${NC}"
         box_sep
-        box_line "  1) 查看已有公钥" "  ${GREEN}1${NC}) 查看已有公钥"
-        box_line "  2) 添加公钥"     "  ${GREEN}2${NC}) 添加公钥"
-        box_line "  3) 删除公钥"     "  ${GREEN}3${NC}) 删除公钥"
-        box_line "  4) 生成密钥对"   "  ${GREEN}4${NC}) 生成密钥对"
-        box_line "  5) 设置登录方式" "  ${GREEN}5${NC}) 设置登录方式"
-        box_line "  6) 修改 SSH 端口" "  ${GREEN}6${NC}) 修改 SSH 端口"
-        box_line "  7) Fail2ban 管理" "  ${GREEN}7${NC}) Fail2ban 管理"
-        box_line "  8) BBR TCP 调优" "  ${GREEN}8${NC}) BBR TCP 调优"
-        box_line "  9) 防火墙管理"   "  ${GREEN}9${NC}) 防火墙管理"
+        box_line "  1) SSH 工具集"   "  ${GREEN}1${NC}) SSH 工具集"
+        box_line "  2) Fail2ban 管理" "  ${GREEN}2${NC}) Fail2ban 管理"
+        box_line "  3) BBR TCP 调优" "  ${GREEN}3${NC}) BBR TCP 调优"
+        box_line "  4) 防火墙管理"   "  ${GREEN}4${NC}) 防火墙管理"
         box_line "  0) 退出"         "  ${RED}0${NC}) 退出"
         box_bot
         echo ""
-        read -rp "  请选择功能 [0-9]: " CHOICE
+        read -rp "  请选择功能 [0-4]: " CHOICE
 
         case "$CHOICE" in
-            1) show_keys ;;
-            2) add_key ;;
-            3) delete_key ;;
-            4) generate_key ;;
-            5) set_login_mode ;;
-            6) change_port ;;
-            7) fail2ban_menu ;;
-            8) bbr_menu ;;
-            9) firewall_menu ;;
+            1) ssh_tools_menu ;;
+            2) fail2ban_menu ;;
+            3) bbr_menu ;;
+            4) firewall_menu ;;
             0) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项，请重新输入。"; sleep 1; continue ;;
         esac
