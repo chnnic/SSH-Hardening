@@ -668,12 +668,13 @@ f2b_config_params() {
     echo -e "  ${GREEN}1${NC}) 修改封禁时长   (bantime)"
     echo -e "  ${GREEN}2${NC}) 修改时间窗口   (findtime)"
     echo -e "  ${GREEN}3${NC}) 修改最大重试次数 (maxretry)"
-    echo -e "  ${GREEN}4${NC}) 快速预设"
+    echo -e "  ${GREEN}4${NC}) 修改监控端口    (port)"
+    echo -e "  ${GREEN}5${NC}) 快速预设"
     echo -e "  ${RED}0${NC}) 返回"
     echo -e "  ${RED}00${NC}) 退出脚本"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
-    read -rp "  请选择 [0-4]: " CH
+    read -rp "  请选择 [0-5]: " CH
 
     case "$CH" in
         1)
@@ -699,10 +700,21 @@ f2b_config_params() {
             ;;
         4)
             echo ""
-            echo -e "  ${GREEN}1${NC}) 严格模式  — 封禁1天  窗口10分钟  最多3次"
-            echo -e "  ${GREEN}2${NC}) 标准模式  — 封禁1小时 窗口10分钟  最多5次"
-            echo -e "  ${GREEN}3${NC}) 宽松模式  — 封禁30分钟 窗口5分钟  最多10次"
-            echo -e "  ${GREEN}4${NC}) 永久封禁  — 封禁永久  窗口10分钟  最多3次"
+            local CUR_SSH_PORT; CUR_SSH_PORT=$(get_config "Port"); CUR_SSH_PORT="${CUR_SSH_PORT:-22}"
+            echo -e "  当前 SSH 端口：${BOLD}${CUR_SSH_PORT}${NC}"
+            echo -e "  示例：ssh  或  22  或  22,2222  或  22:2222"
+            echo -e "  ${DIM}提示：直接回车使用当前 SSH 端口 ${CUR_SSH_PORT}${NC}"
+            echo ""
+            read -rp "  请输入监控端口: " VAL
+            VAL="${VAL:-$CUR_SSH_PORT}"
+            f2b_set_param_jail "port" "$VAL"
+            ;;
+        5)
+            echo ""
+            echo -e "  ${GREEN}1${NC}) 严格模式  — 封禁1天   窗口10分钟  最多3次"
+            echo -e "  ${GREEN}2${NC}) 标准模式  — 封禁1小时  窗口10分钟  最多5次"
+            echo -e "  ${GREEN}3${NC}) 宽松模式  — 封禁30分钟 窗口5分钟   最多10次"
+            echo -e "  ${GREEN}4${NC}) 永久封禁  — 封禁永久   窗口10分钟  最多3次"
             echo ""
             read -rp "  请选择预设 [1-4]: " PRESET
             case "$PRESET" in
@@ -723,7 +735,7 @@ f2b_config_params() {
     restart_fail2ban && info "Fail2ban 已重启 ✓" || error "重启失败"
 }
 
-# 写入参数到 jail.local
+# 写入参数到 jail.local [DEFAULT] 节
 f2b_set_param() {
     local KEY="$1" VAL="$2"
     local JAIL_LOCAL="/etc/fail2ban/jail.local"
@@ -742,6 +754,41 @@ f2b_set_param() {
         sed -i "/^\[DEFAULT\]/a ${KEY} = ${VAL}" "$JAIL_LOCAL"
     fi
     info "${KEY} 已设置为 ${VAL} ✓"
+}
+
+# 写入参数到 jail.local [sshd] 节
+f2b_set_param_jail() {
+    local KEY="$1" VAL="$2"
+    local JAIL_LOCAL="/etc/fail2ban/jail.local"
+
+    [ -f "$JAIL_LOCAL" ] || echo -e "[DEFAULT]
+
+[sshd]
+enabled = true" > "$JAIL_LOCAL"
+
+    if grep -q "^\[sshd\]" "$JAIL_LOCAL"; then
+        # 已有 [sshd] 节：在节内找 key 并替换，没有则在 [sshd] 下追加
+        if grep -A20 "^\[sshd\]" "$JAIL_LOCAL" | grep -qE "^${KEY}\s*="; then
+            # 替换 [sshd] 节内的 key（简单 sed，适配大多数结构）
+            awk -v k="$KEY" -v v="$VAL" '
+                /^\[sshd\]/{in_sshd=1}
+                /^\[/ && !/^\[sshd\]/{in_sshd=0}
+                in_sshd && $0 ~ "^"k"[[:space:]]*=" {print k" = "v; next}
+                {print}
+            ' "$JAIL_LOCAL" > "${JAIL_LOCAL}.tmp" && mv "${JAIL_LOCAL}.tmp" "$JAIL_LOCAL"
+        else
+            # 在 [sshd] 后追加
+            sed -i "/^\[sshd\]/a ${KEY} = ${VAL}" "$JAIL_LOCAL"
+        fi
+    else
+        # 没有 [sshd] 节，追加
+        printf '
+[sshd]
+enabled = true
+%s = %s
+' "$KEY" "$VAL" >> "$JAIL_LOCAL"
+    fi
+    info "[sshd] ${KEY} 已设置为 ${VAL} ✓"
 }
 
 # ── 编辑配置文件 ──────────────────────────────────────────
@@ -783,7 +830,7 @@ JAILEOF
             nano "$JAIL_LOCAL"
             echo ""
             read -rp "  是否重启 Fail2ban 使配置生效？(yes/no): " RESTART
-            [ "$RESTART" = "yes" ] && systemctl restart fail2ban && info "Fail2ban 已重启 ✓"
+            [ "$RESTART" = "yes" ] && restart_fail2ban && info "Fail2ban 已重启 ✓" || true
             ;;
         2)
             if [ -f "$JAIL_CONF" ]; then
@@ -853,8 +900,9 @@ fail2ban_menu() {
         JAIL_NAME="${JAIL_NAME:-sshd}"
 
         if [ "$F2B_ST" = "running" ]; then
-            BANNED_COUNT=$(fail2ban-client status "$JAIL_NAME" 2>/dev/null                 | grep "Currently banned" | awk -F: '"'"'{gsub(/ /,"",$2); print $2}'"'"' || echo 0)
-            TOTAL_FAIL=$(fail2ban-client status "$JAIL_NAME" 2>/dev/null                 | grep "Total failed" | awk -F: '"'"'{gsub(/ /,"",$2); print $2}'"'"' || echo 0)
+            BANNED_COUNT=$(fail2ban-client status "$JAIL_NAME" 2>/dev/null \
+                | grep "Currently banned" | grep -oE "[0-9]+" | tail -1)
+            BANNED_COUNT="${BANNED_COUNT:-0}"
         else
             BANNED_COUNT="-"; TOTAL_FAIL="-"
         fi
@@ -867,8 +915,22 @@ fail2ban_menu() {
         box_sep
         box_title "Fail2ban 管理"
         box_sep
-        box_line "  服务状态: ${F2B_ST}"                  "  服务状态: ${F2B_COLOR}${BOLD}${F2B_ST}${NC}"
-        box_line "  SSH jail: ${JAIL_NAME}  封禁: ${BANNED_COUNT}  失败: ${TOTAL_FAIL}"                  "  SSH jail: ${BOLD}${JAIL_NAME}${NC}  封禁: ${RED}${BOLD}${BANNED_COUNT}${NC}  失败: ${YELLOW}${BOLD}${TOTAL_FAIL}${NC}"
+        # 读取当前参数
+        local CUR_BAN CUR_FIND CUR_MAX CUR_PORT
+        CUR_BAN=$(grep -E "^bantime\s*=" /etc/fail2ban/jail.local 2>/dev/null | tail -1 | awk -F= '{gsub(/ /,"",$2); print $2}')
+        CUR_FIND=$(grep -E "^findtime\s*=" /etc/fail2ban/jail.local 2>/dev/null | tail -1 | awk -F= '{gsub(/ /,"",$2); print $2}')
+        CUR_MAX=$(grep -E "^maxretry\s*=" /etc/fail2ban/jail.local 2>/dev/null | tail -1 | awk -F= '{gsub(/ /,"",$2); print $2}')
+        CUR_PORT=$(grep -E "^port\s*=" /etc/fail2ban/jail.local 2>/dev/null | tail -1 | awk -F= '{gsub(/ /,"",$2); print $2}')
+        [ -z "$CUR_BAN" ]  && CUR_BAN="3600"
+        [ -z "$CUR_FIND" ] && CUR_FIND="600"
+        [ -z "$CUR_MAX" ]  && CUR_MAX="5"
+        [ -z "$CUR_PORT" ] && CUR_PORT="ssh"
+        local BAN_MIN=$(( CUR_BAN / 60 ))
+        local FIND_MIN=$(( CUR_FIND / 60 ))
+
+        box_line "  服务: ${F2B_ST}  jail: ${JAIL_NAME}"                  "  服务: ${F2B_COLOR}${BOLD}${F2B_ST}${NC}  jail: ${BOLD}${JAIL_NAME}${NC}"
+        box_line "  封禁IP: ${BANNED_COUNT}  总失败: ${TOTAL_FAIL}  监控端口: ${CUR_PORT}"                  "  封禁IP: ${RED}${BOLD}${BANNED_COUNT}${NC}  总失败: ${YELLOW}${BOLD}${TOTAL_FAIL}${NC}  端口: ${BOLD}${CUR_PORT}${NC}"
+        box_line "  封禁时长: ${BAN_MIN}min  窗口: ${FIND_MIN}min  最大重试: ${CUR_MAX}次"                  "  封禁时长: ${BOLD}${BAN_MIN}min${NC}  窗口: ${BOLD}${FIND_MIN}min${NC}  最大重试: ${BOLD}${CUR_MAX}${NC}次"
         box_sep
         box_line "  1) 查看封禁 IP 列表" "  ${GREEN}1${NC}) 查看封禁 IP 列表"
         box_line "  2) 手动解封 IP"      "  ${GREEN}2${NC}) 手动解封 IP"
@@ -1458,13 +1520,33 @@ bbr_menu_tc() {
 }
 
 # ── initcwnd 菜单 ─────────────────────────────────────────
+# 检测是否在 LXC 容器内
+is_lxc() {
+    grep -qa "lxc" /proc/1/environ 2>/dev/null     || [ -f /run/systemd/container ]     || grep -qa "container=lxc" /proc/1/environ 2>/dev/null     || { [ -f /proc/1/cgroup ] && grep -qa "lxc" /proc/1/cgroup 2>/dev/null; }
+}
+
 bbr_menu_initcwnd() {
     print_header "initcwnd 设置"
+
+    # ── LXC 检测 ───────────────────────────────────────────
+    if is_lxc; then
+        echo ""
+        warn "检测到当前运行于 ${BOLD}LXC 容器${NC} 中"
+        warn "LXC 容器没有独立网络命名空间权限，无法执行 ip route change"
+        echo ""
+        echo -e "  ${DIM}initcwnd 需要在宿主机或独立网络命名空间（如 KVM/独立VPS）中设置${NC}"
+        echo -e "  ${DIM}如需设置，请在宿主机执行：${NC}"
+        echo -e "  ${CYAN}  ip route change default initcwnd 50 initrwnd 50${NC}"
+        echo ""
+        return
+    fi
+
     local DEV GW ONLINK
     DEV=$(ip route | awk '/^default/{print $5}')
     GW=$(ip route | awk '/^default/{print $3}')
     ONLINK=$(ip route | grep "^default" | grep -q "onlink" && echo "onlink" || echo "")
-    local CUR; CUR=$(ip route show | grep "^default" | grep -oE 'initcwnd [0-9]+' | awk '{print $2}' || echo "10")
+    local CUR; CUR=$(ip route show | grep "^default" | grep -oE 'initcwnd [0-9]+' | awk '{print $2}')
+    CUR="${CUR:-10（默认）}"
 
     echo -e "  网卡：${BOLD}${DEV}${NC}  网关：${BOLD}${GW}${NC}  当前 initcwnd：${BOLD}${CUR}${NC}"
     echo ""
@@ -1496,7 +1578,10 @@ bbr_menu_initcwnd() {
     esac
 
     ip route change default via "$GW" dev "$DEV" $ONLINK initcwnd "$VAL" initrwnd "$VAL" || {
-        error "ip route change 失败"; return
+        error "ip route change 失败"
+        echo ""
+        echo -e "  ${DIM}如果你在 LXC/OpenVZ 容器内，此操作会被宿主机拒绝，这是正常现象${NC}"
+        return
     }
 
     local SERVICE_CWND="/etc/systemd/system/initcwnd.service"
