@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ============================================================
-#  SSH 管理脚本
-#  功能：公钥管理 / 生成密钥 / 登录方式设置 / 端口修改
+#  VPS 开荒脚本 — 银趴火山帮
+#  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
 SSHD_CONFIG="/etc/ssh/sshd_config"
@@ -70,8 +70,8 @@ print_header() {
     clear
     echo ""
     box_top
-    box_title "SSH 管理工具"
-    box_line "  银趴火山帮" "  ${DIM}银趴火山帮${NC}"
+    box_title "VPS 开荒脚本"
+    box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
     box_bot
@@ -514,8 +514,8 @@ fail2ban_menu() {
         clear
         echo ""
         box_top
-        box_title "SSH 管理工具"
-        box_line "  银趴火山帮" "  ${DIM}银趴火山帮${NC}"
+        box_title "VPS 开荒脚本"
+        box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
         box_sep
@@ -670,6 +670,514 @@ f2b_logs() {
     fi
 }
 
+
+# ══════════════════════════════════════════════════════════
+#  BBR TCP 调优模块
+# ══════════════════════════════════════════════════════════
+
+SERVICE_TC="/etc/systemd/system/tc-fq.service"
+SYSCTL_FILE="/etc/sysctl.conf"
+
+# ── 状态显示 ──────────────────────────────────────────────
+bbr_print_status() {
+    local DEV; DEV=$(ip route | awk '/^default/{print $5}')
+    local RATE; RATE=$(tc qdisc show dev "$DEV" 2>/dev/null | grep -oP '(?:maxrate|rate) \K\S+' | head -1)
+    [ -z "$RATE" ] && RATE="未设置"
+    local BBR; BBR=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
+    local CWND; CWND=$(ip route show | grep "^default" | grep -oP 'initcwnd \K\d+' || echo "10")
+    echo -e "  网卡 ${BOLD}$DEV${NC}  |  拥塞控制 ${BOLD}$BBR${NC}  |  限速 ${BOLD}$RATE${NC}  |  initcwnd ${BOLD}$CWND${NC}"
+}
+
+# ── 备份 sysctl ───────────────────────────────────────────
+bbr_backup_sysctl() {
+    if [ -f "$SYSCTL_FILE" ]; then
+        local BAK="${SYSCTL_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+        cp "$SYSCTL_FILE" "$BAK"
+        info "已备份至：$BAK"
+    fi
+}
+
+# ── 还原 sysctl ───────────────────────────────────────────
+bbr_restore_sysctl() {
+    print_header "还原 sysctl.conf"
+    local BACKUPS=()
+    mapfile -t BACKUPS < <(ls -t "${SYSCTL_FILE}.bak."* 2>/dev/null)
+    if [ ${#BACKUPS[@]} -eq 0 ]; then
+        warn "未找到任何备份文件"
+        return
+    fi
+    local i=1
+    for f in "${BACKUPS[@]}"; do
+        echo -e "  ${GREEN}[$i]${NC} $(basename "$f")  $(stat -c '%y' "$f" | cut -d'.' -f1)"
+        (( i++ ))
+    done
+    echo -e "  ${YELLOW}[d]${NC} 清除全部备份"
+    echo -e "  ${RED}[0]${NC} 返回"
+    echo ""
+    read -rp "  请选择: " CH
+    case "$CH" in
+        0) return ;;
+        d|D)
+            read -rp "  确认清除全部 ${#BACKUPS[@]} 个备份？(yes/no): " C
+            [ "$C" = "yes" ] && rm -f "${SYSCTL_FILE}.bak."* && info "已清除全部备份" || warn "已取消"
+            ;;
+        *)
+            if [[ "$CH" =~ ^[0-9]+$ ]] && [ "$CH" -ge 1 ] && [ "$CH" -le ${#BACKUPS[@]} ]; then
+                local T="${BACKUPS[$((CH-1))]}"
+                cp "$T" "$SYSCTL_FILE"
+                sysctl -p "$SYSCTL_FILE" > /dev/null 2>&1
+                info "已还原：$(basename "$T") ✓"
+            else
+                error "无效选项"
+            fi
+            ;;
+    esac
+}
+
+# ── 应用 sysctl ───────────────────────────────────────────
+bbr_apply_sysctl() {
+    local CONFIG="$1"
+    rm -f "$SYSCTL_FILE"
+    echo "$CONFIG" > "$SYSCTL_FILE"
+    sysctl -p "$SYSCTL_FILE" > /dev/null 2>&1
+    info "sysctl 配置已应用 ✓"
+}
+
+# ── 应用 tc 限速 ──────────────────────────────────────────
+bbr_apply_tc() {
+    local RATE="$1"
+    local DEV; DEV=$(ip route | awk '/^default/{print $5}')
+    local TX_Q; TX_Q=$(ls /sys/class/net/"$DEV"/queues/ 2>/dev/null | grep "^tx-" | wc -l)
+    local IS_MQ=0
+    { tc qdisc show dev "$DEV" 2>/dev/null | grep -q "qdisc mq" || [ "$TX_Q" -gt 1 ]; } && IS_MQ=1
+
+    if [ "$IS_MQ" -eq 1 ]; then
+        tc qdisc replace dev "$DEV" root tbf rate "${RATE}mbit" burst 10mbit latency 50ms
+        cat > "$SERVICE_TC" << EOF
+[Unit]
+Description=FQ rate limit
+After=network.target
+[Service]
+Type=oneshot
+ExecStart=/sbin/tc qdisc replace dev ${DEV} root tbf rate ${RATE}mbit burst 10mbit latency 50ms
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+EOF
+    else
+        tc qdisc replace dev "$DEV" root fq maxrate "${RATE}mbit"
+        cat > "$SERVICE_TC" << EOF
+[Unit]
+Description=FQ rate limit
+After=network.target
+[Service]
+Type=oneshot
+ExecStart=/sbin/tc qdisc replace dev ${DEV} root fq maxrate ${RATE}mbit
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+EOF
+    fi
+    systemctl daemon-reload
+    systemctl enable tc-fq &>/dev/null
+    systemctl restart tc-fq
+    info "tc 限速已应用：${RATE}Mbps ✓"
+}
+
+# ── 生成 sysctl 配置内容 ──────────────────────────────────
+bbr_generate_config() {
+    local RMEM=$1 WMEM=$2 TCP_MEM=$3 NOTSENT=$4 ADV_WIN=$5 \
+          MIN_FREE=$6 SWAPPINESS=$7 TCP_RMEM_DEFAULT=$8
+    cat << EOF
+# BBR TCP 调优配置 — 生成时间：$(date)
+kernel.pid_max = 65535
+kernel.panic = 1
+kernel.sysrq = 176
+kernel.numa_balancing = 0
+kernel.sched_autogroup_enabled = 0
+vm.swappiness = ${SWAPPINESS}
+vm.dirty_ratio = 20
+vm.dirty_background_ratio = 5
+vm.overcommit_memory = 1
+vm.min_free_kbytes = ${MIN_FREE}
+net.core.default_qdisc = fq
+net.core.netdev_max_backlog = 8192
+net.core.somaxconn = 8192
+net.core.optmem_max = 1048576
+net.core.rmem_max = ${RMEM}
+net.core.wmem_max = ${WMEM}
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
+net.ipv4.tcp_rmem = 32768 ${TCP_RMEM_DEFAULT} ${RMEM}
+net.ipv4.tcp_wmem = 32768 ${TCP_RMEM_DEFAULT} ${WMEM}
+net.ipv4.tcp_mem = ${TCP_MEM}
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_timestamps = 1
+net.ipv4.tcp_window_scaling = 1
+net.ipv4.tcp_adv_win_scale = ${ADV_WIN}
+net.ipv4.tcp_moderate_rcvbuf = 1
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.tcp_notsent_lowat = ${NOTSENT}
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_sack = 1
+net.ipv4.tcp_ecn = 2
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 10
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_max_tw_buckets = 32768
+net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_keepalive_time = 60
+net.ipv4.tcp_keepalive_intvl = 10
+net.ipv4.tcp_keepalive_probes = 5
+net.ipv4.ip_local_port_range = 1024 65535
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+EOF
+}
+
+# ── 确认并应用参数 ────────────────────────────────────────
+bbr_confirm_apply() {
+    local RMEM=$1 WMEM=$2 TCP_MEM=$3 NOTSENT=$4 ADV_WIN=$5 \
+          MIN_FREE=$6 SWAP=$7 TCP_RMEM_DEFAULT=$8 \
+          LABEL_MODE=$9 LABEL_BUF=${10}
+
+    local BUF_MB=$(( RMEM / 1048576 ))
+    echo ""
+    echo -e "  ${YELLOW}── 配置摘要 ──────────────────────────────${NC}"
+    echo -e "  模式         : ${BOLD}$LABEL_MODE${NC}"
+    echo -e "  缓冲区       : ${BOLD}${LABEL_BUF}MB${NC}  (rmem/wmem max)"
+    echo -e "  tcp_rmem default : ${BOLD}$(( TCP_RMEM_DEFAULT / 1048576 ))MB${NC}"
+    echo -e "  min_free_kbytes  : ${BOLD}${MIN_FREE}${NC}"
+    echo -e "  tcp_mem      : ${BOLD}${TCP_MEM}${NC}"
+    echo -e "  adv_win_scale: ${BOLD}${ADV_WIN}${NC}"
+    echo -e "  swappiness   : ${BOLD}${SWAP}${NC}"
+    echo -e "  ${YELLOW}──────────────────────────────────────────${NC}"
+    echo ""
+    read -rp "  确认应用？(yes/no): " CONFIRM
+    [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
+
+    if [ -f "$SYSCTL_FILE" ]; then
+        read -rp "  是否备份旧的 sysctl.conf？(yes/no): " DO_BAK
+        [ "$DO_BAK" = "yes" ] && bbr_backup_sysctl
+    fi
+
+    local CONFIG
+    CONFIG=$(bbr_generate_config "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN" "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT")
+    bbr_apply_sysctl "$CONFIG"
+    echo ""
+    info "BBR TCP 调优配置完成 ✓"
+    warn "建议配合限速设置使用，避免 Retr 爆炸"
+}
+
+# ── 自动计算模式：根据 BDP 推导缓冲区 ───────────────────
+bbr_auto_calc() {
+    local MEM_MB=$1 LAT_MS=$2 BW_MBPS=$3 MEM_LBL=$4 LAT_LBL=$5 BW_LBL=$6
+
+    local BW_MBS=$(( BW_MBPS / 8 ))
+    local BDP_MB=$(( BW_MBS * LAT_MS / 1000 ))
+    local BUF_CALC=$(( BDP_MB * 3 / 2 ))
+
+    local RMEM WMEM ADV_WIN NOTSENT TCP_RMEM_DEFAULT
+    if   [ "$BUF_CALC" -le 10 ];  then RMEM=12582912;  WMEM=12582912;  ADV_WIN=2; NOTSENT=131072; TCP_RMEM_DEFAULT=1048576
+    elif [ "$BUF_CALC" -le 20 ];  then RMEM=20971520;  WMEM=20971520;  ADV_WIN=2; NOTSENT=131072; TCP_RMEM_DEFAULT=1048576
+    elif [ "$BUF_CALC" -le 40 ];  then RMEM=41943040;  WMEM=41943040;  ADV_WIN=3; NOTSENT=262144; TCP_RMEM_DEFAULT=1048576
+    elif [ "$BUF_CALC" -le 64 ];  then RMEM=67108864;  WMEM=67108864;  ADV_WIN=3; NOTSENT=524288; TCP_RMEM_DEFAULT=1048576
+    else                                RMEM=134217728; WMEM=134217728; ADV_WIN=3; NOTSENT=524288; TCP_RMEM_DEFAULT=1048576
+    fi
+
+    local MIN_FREE SWAP TCP_MEM
+    if   [ "$MEM_MB" -eq 512  ]; then MIN_FREE=32768; SWAP=10; TCP_MEM="32768 49152 98304"
+    elif [ "$MEM_MB" -eq 1024 ]; then MIN_FREE=65536; SWAP=10; TCP_MEM="49152 65536 131072"
+    else                               MIN_FREE=65536; SWAP=5;  TCP_MEM="131072 196608 393216"
+    fi
+
+    local BUF_MB=$(( RMEM / 1048576 ))
+    echo ""
+    echo -e "  BDP 估算：${BOLD}${BDP_MB}MB${NC}  →  推荐缓冲区：${BOLD}${BUF_MB}MB${NC}"
+    echo -e "  内存：${MEM_LBL}  延迟：${LAT_LBL}  带宽：${BW_LBL}"
+
+    bbr_confirm_apply "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN" \
+        "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT" \
+        "自动计算（${MEM_LBL} / ${LAT_LBL} / ${BW_LBL}）" "$BUF_MB"
+}
+
+# ── 手动选择缓冲区模式 ────────────────────────────────────
+bbr_manual_buf() {
+    local MEM_MB=$1 MEM_LBL=$2
+
+    print_header "BBR 手动缓冲区配置"
+    echo -e "  内存：${BOLD}${MEM_LBL}${NC}"
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${GREEN}1${NC}) 12 MB   — 低带宽 / 低延迟"
+    echo -e "  ${GREEN}2${NC}) 16 MB   — 小内存保守"
+    echo -e "  ${GREEN}3${NC}) 20 MB   — 中低带宽"
+    echo -e "  ${GREEN}4${NC}) 40 MB   — 中等带宽"
+    echo -e "  ${GREEN}5${NC}) 64 MB   — 高带宽推荐"
+    echo -e "  ${GREEN}6${NC}) 128 MB  — 超高带宽 / 高延迟"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    read -rp "  请选择 [0-6]: " CH
+
+    # 缓冲区映射表
+    local RMEM WMEM ADV_WIN NOTSENT TCP_RMEM_DEFAULT BUF_LBL
+    case "$CH" in
+        1) RMEM=12582912;  WMEM=12582912;  ADV_WIN=2; NOTSENT=131072; TCP_RMEM_DEFAULT=1048576; BUF_LBL=12 ;;
+        2) RMEM=16777216;  WMEM=16777216;  ADV_WIN=2; NOTSENT=131072; TCP_RMEM_DEFAULT=1048576; BUF_LBL=16 ;;
+        3) RMEM=20971520;  WMEM=20971520;  ADV_WIN=2; NOTSENT=131072; TCP_RMEM_DEFAULT=1048576; BUF_LBL=20 ;;
+        4) RMEM=41943040;  WMEM=41943040;  ADV_WIN=3; NOTSENT=262144; TCP_RMEM_DEFAULT=1048576; BUF_LBL=40 ;;
+        5) RMEM=67108864;  WMEM=67108864;  ADV_WIN=3; NOTSENT=524288; TCP_RMEM_DEFAULT=1048576; BUF_LBL=64 ;;
+        6) RMEM=134217728; WMEM=134217728; ADV_WIN=3; NOTSENT=524288; TCP_RMEM_DEFAULT=1048576; BUF_LBL=128 ;;
+        0) return ;;
+        *) warn "无效选项"; return ;;
+    esac
+
+    local MIN_FREE SWAP TCP_MEM
+    if   [ "$MEM_MB" -eq 512  ]; then MIN_FREE=32768; SWAP=10; TCP_MEM="32768 49152 98304"
+    elif [ "$MEM_MB" -eq 1024 ]; then MIN_FREE=65536; SWAP=10; TCP_MEM="49152 65536 131072"
+    else                               MIN_FREE=65536; SWAP=5;  TCP_MEM="131072 196608 393216"
+    fi
+
+    bbr_confirm_apply "$RMEM" "$WMEM" "$TCP_MEM" "$NOTSENT" "$ADV_WIN" \
+        "$MIN_FREE" "$SWAP" "$TCP_RMEM_DEFAULT" \
+        "手动选择（${MEM_LBL}）" "$BUF_LBL"
+}
+
+# ── 自动模式：带宽子菜单 ─────────────────────────────────
+bbr_menu_bandwidth() {
+    local MEM_MB=$1 LAT_MS=$2 MEM_LBL=$3 LAT_LBL=$4
+    print_header "BBR 自动配置 — 选择带宽"
+    echo -e "  内存：${BOLD}${MEM_LBL}${NC}  延迟：${BOLD}${LAT_LBL}${NC}"
+    echo ""
+    echo -e "  ${GREEN}1${NC}) 200 Mbps"
+    echo -e "  ${GREEN}2${NC}) 500 Mbps"
+    echo -e "  ${GREEN}3${NC}) 1 Gbps  (1024 Mbps)"
+    echo -e "  ${GREEN}4${NC}) 2 Gbps  (2048 Mbps)"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo ""
+    read -rp "  请选择 [0-4]: " CH
+    case "$CH" in
+        1) bbr_auto_calc "$MEM_MB" "$LAT_MS" 200  "$MEM_LBL" "$LAT_LBL" "200Mbps" ;;
+        2) bbr_auto_calc "$MEM_MB" "$LAT_MS" 500  "$MEM_LBL" "$LAT_LBL" "500Mbps" ;;
+        3) bbr_auto_calc "$MEM_MB" "$LAT_MS" 1024 "$MEM_LBL" "$LAT_LBL" "1Gbps" ;;
+        4) bbr_auto_calc "$MEM_MB" "$LAT_MS" 2048 "$MEM_LBL" "$LAT_LBL" "2Gbps" ;;
+        0) return ;;
+        *) warn "无效选项" ;;
+    esac
+}
+
+# ── 自动模式：延迟子菜单 ─────────────────────────────────
+bbr_menu_latency() {
+    local MEM_MB=$1 MEM_LBL=$2
+    print_header "BBR 自动配置 — 选择延迟"
+    echo -e "  内存：${BOLD}${MEM_LBL}${NC}"
+    echo ""
+    echo -e "  ${GREEN}1${NC}) 100ms 以内     （国内 / 亚洲近距离）"
+    echo -e "  ${GREEN}2${NC}) 100ms - 200ms  （跨国，如美西→中国）"
+    echo -e "  ${GREEN}3${NC}) 200ms 以上     （欧洲→中国 / 长距离）"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo ""
+    read -rp "  请选择 [0-3]: " CH
+    case "$CH" in
+        1) bbr_menu_bandwidth "$MEM_MB" 50  "$MEM_LBL" "100ms以内" ;;
+        2) bbr_menu_bandwidth "$MEM_MB" 150 "$MEM_LBL" "100-200ms" ;;
+        3) bbr_menu_bandwidth "$MEM_MB" 250 "$MEM_LBL" "200ms以上" ;;
+        0) return ;;
+        *) warn "无效选项" ;;
+    esac
+}
+
+# ── 自动模式：内存子菜单 ─────────────────────────────────
+bbr_menu_auto() {
+    print_header "BBR 自动配置 — 选择内存"
+    echo -e "  ${GREEN}1${NC}) 512 MB"
+    echo -e "  ${GREEN}2${NC}) 1 GB"
+    echo -e "  ${GREEN}3${NC}) 2 GB"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo ""
+    read -rp "  请选择 [0-3]: " CH
+    case "$CH" in
+        1) bbr_menu_latency 512  "512MB" ;;
+        2) bbr_menu_latency 1024 "1GB" ;;
+        3) bbr_menu_latency 2048 "2GB" ;;
+        0) return ;;
+        *) warn "无效选项" ;;
+    esac
+}
+
+# ── 手动模式：内存子菜单 ─────────────────────────────────
+bbr_menu_manual() {
+    print_header "BBR 手动配置 — 选择内存"
+    echo -e "  ${GREEN}1${NC}) 512 MB"
+    echo -e "  ${GREEN}2${NC}) 1 GB"
+    echo -e "  ${GREEN}3${NC}) 2 GB"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo ""
+    read -rp "  请选择 [0-3]: " CH
+    case "$CH" in
+        1) bbr_manual_buf 512  "512MB" ;;
+        2) bbr_manual_buf 1024 "1GB" ;;
+        3) bbr_manual_buf 2048 "2GB" ;;
+        0) return ;;
+        *) warn "无效选项" ;;
+    esac
+}
+
+# ── tc 限速菜单 ───────────────────────────────────────────
+bbr_menu_tc() {
+    print_header "限速设置（tc）"
+    local DEV; DEV=$(ip route | awk '/^default/{print $5}')
+    local TX_Q; TX_Q=$(ls /sys/class/net/"$DEV"/queues/ 2>/dev/null | grep "^tx-" | wc -l)
+    local IS_MQ=0
+    { tc qdisc show dev "$DEV" 2>/dev/null | grep -q "qdisc mq" || [ "$TX_Q" -gt 1 ]; } && IS_MQ=1
+    local CUR; CUR=$(tc qdisc show dev "$DEV" 2>/dev/null | grep -oP '(?:maxrate|rate) \K\S+' | head -1)
+    [ -z "$CUR" ] && CUR="未设置"
+
+    echo -e "  网卡：${BOLD}${DEV}${NC}  类型：${BOLD}$([ "$IS_MQ" -eq 1 ] && echo "mq多队列" || echo "单队列")${NC}  当前限速：${BOLD}${CUR}${NC}"
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${GREEN}1${NC}) 200 Mbps"
+    echo -e "  ${GREEN}2${NC}) 500 Mbps"
+    echo -e "  ${GREEN}3${NC}) 780 Mbps"
+    echo -e "  ${GREEN}4${NC}) 1024 Mbps (1Gbps)"
+    echo -e "  ${GREEN}5${NC}) 2048 Mbps (2Gbps)"
+    echo -e "  ${GREEN}6${NC}) 自定义输入"
+    echo -e "  ${YELLOW}7${NC}) 取消限速"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    read -rp "  请选择 [0-7]: " CH
+
+    local RATE=0
+    case "$CH" in
+        1) RATE=200 ;;
+        2) RATE=500 ;;
+        3) RATE=780 ;;
+        4) RATE=1024 ;;
+        5) RATE=2048 ;;
+        6)
+            read -rp "  请输入限速值（Mbps）: " RATE
+            if ! [[ "$RATE" =~ ^[0-9]+$ ]] || [ "$RATE" -lt 1 ]; then
+                error "无效数值"; return
+            fi
+            ;;
+        7) RATE=0 ;;
+        0) return ;;
+        *) warn "无效选项"; return ;;
+    esac
+
+    if [ "$RATE" -eq 0 ]; then
+        if [ "$IS_MQ" -eq 1 ]; then
+            tc qdisc del dev "$DEV" root 2>/dev/null
+            tc qdisc add dev "$DEV" root mq 2>/dev/null
+        else
+            tc qdisc del dev "$DEV" root 2>/dev/null
+        fi
+        systemctl disable tc-fq &>/dev/null
+        rm -f "$SERVICE_TC"
+        systemctl daemon-reload
+        info "已取消限速 ✓"
+    else
+        bbr_apply_tc "$RATE"
+    fi
+}
+
+# ── initcwnd 菜单 ─────────────────────────────────────────
+bbr_menu_initcwnd() {
+    print_header "initcwnd 设置"
+    local DEV GW ONLINK
+    DEV=$(ip route | awk '/^default/{print $5}')
+    GW=$(ip route | awk '/^default/{print $3}')
+    ONLINK=$(ip route | grep "^default" | grep -q "onlink" && echo "onlink" || echo "")
+    local CUR; CUR=$(ip route show | grep "^default" | grep -oP 'initcwnd \K\d+' || echo "10")
+
+    echo -e "  网卡：${BOLD}${DEV}${NC}  网关：${BOLD}${GW}${NC}  当前 initcwnd：${BOLD}${CUR}${NC}"
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${GREEN}1${NC}) 10   — 默认保守"
+    echo -e "  ${GREEN}2${NC}) 50   — 跨国高延迟推荐"
+    echo -e "  ${GREEN}3${NC}) 100  — 激进（可能丢包）"
+    echo -e "  ${GREEN}4${NC}) 自定义输入"
+    echo -e "  ${RED}0${NC}) 返回"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    read -rp "  请选择 [0-4]: " CH
+
+    local VAL
+    case "$CH" in
+        1) VAL=10 ;;
+        2) VAL=50 ;;
+        3) VAL=100 ;;
+        4)
+            read -rp "  请输入 initcwnd 值（1-1000）: " VAL
+            if ! [[ "$VAL" =~ ^[0-9]+$ ]] || [ "$VAL" -lt 1 ] || [ "$VAL" -gt 1000 ]; then
+                error "无效数值"; return
+            fi
+            ;;
+        0) return ;;
+        *) warn "无效选项"; return ;;
+    esac
+
+    ip route change default via "$GW" dev "$DEV" $ONLINK initcwnd "$VAL" initrwnd "$VAL" || {
+        error "ip route change 失败"; return
+    }
+
+    local SERVICE_CWND="/etc/systemd/system/initcwnd.service"
+    cat > "$SERVICE_CWND" << EOF
+[Unit]
+Description=Set TCP initcwnd
+After=network.target
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'GW=\$(ip route | awk '"'"'/^default/{print \$3}'"'"'); DEV=\$(ip route | awk '"'"'/^default/{print \$5}'"'"'); ONLINK=\$(ip route | grep "^default" | grep -q "onlink" && echo "onlink" || echo ""); ip route change default via \$GW dev \$DEV \$ONLINK initcwnd ${VAL} initrwnd ${VAL}'
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable initcwnd &>/dev/null
+    systemctl restart initcwnd
+    info "initcwnd 已设置为 ${VAL}，重启后自动生效 ✓"
+}
+
+# ── BBR 主菜单 ────────────────────────────────────────────
+bbr_menu() {
+    while true; do
+        print_header "BBR TCP 调优"
+        bbr_print_status
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 自动配置（根据内存 / 延迟 / 带宽计算）"
+        echo -e "  ${GREEN}2${NC}) 手动选择缓冲区大小"
+        echo -e "  ${GREEN}3${NC}) 限速设置（tc）"
+        echo -e "  ${GREEN}4${NC}) initcwnd 设置"
+        echo -e "  ${GREEN}5${NC}) 备份 sysctl.conf"
+        echo -e "  ${GREEN}6${NC}) 还原 sysctl.conf"
+        echo -e "  ${RED}0${NC}) 返回主菜单"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo ""
+        read -rp "  请选择 [0-6]: " CH
+
+        case "$CH" in
+            1) bbr_menu_auto ;;
+            2) bbr_menu_manual ;;
+            3) bbr_menu_tc ;;
+            4) bbr_menu_initcwnd ;;
+            5) bbr_backup_sysctl ;;
+            6) bbr_restore_sysctl ;;
+            0) return ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+
+        echo ""
+        read -rp "  按 Enter 返回..." _
+    done
+}
+
 # ══════════════════════════════════════════════════════════
 #  主菜单
 # ══════════════════════════════════════════════════════════
@@ -685,8 +1193,8 @@ main_menu() {
         clear
         echo ""
         box_top
-        box_title "SSH 管理工具"
-        box_line "  银趴火山帮" "  ${DIM}银趴火山帮${NC}"
+        box_title "VPS 开荒脚本"
+        box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_line "  端口 ${CUR_PORT:-22}  |  公钥数 ${KEYCOUNT}" \
                  "  端口 ${BOLD}${CUR_PORT:-22}${NC}  |  公钥数 ${BOLD}${KEYCOUNT}${NC}"
@@ -699,6 +1207,9 @@ main_menu() {
         else
             box_line "  Fail2ban: 未安装" "  Fail2ban: ${YELLOW}${BOLD}未安装${NC}"
         fi
+        local BBR_CC; BBR_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
+        local TC_RATE; TC_RATE=$(tc qdisc show dev "$(ip route | awk '/^default/{print $5}')" 2>/dev/null | grep -oP '(?:maxrate|rate) \K\S+' | head -1); [ -z "$TC_RATE" ] && TC_RATE="无限速"
+        box_line "  BBR: ${BBR_CC}  |  限速: ${TC_RATE}" "  BBR: ${BOLD}${BBR_CC}${NC}  |  限速: ${BOLD}${TC_RATE}${NC}"
         box_sep
         box_line "  1) 查看已有公钥" "  ${GREEN}1${NC}) 查看已有公钥"
         box_line "  2) 添加公钥"     "  ${GREEN}2${NC}) 添加公钥"
@@ -707,10 +1218,11 @@ main_menu() {
         box_line "  5) 设置登录方式" "  ${GREEN}5${NC}) 设置登录方式"
         box_line "  6) 修改 SSH 端口" "  ${GREEN}6${NC}) 修改 SSH 端口"
         box_line "  7) Fail2ban 管理" "  ${GREEN}7${NC}) Fail2ban 管理"
+        box_line "  8) BBR TCP 调优" "  ${GREEN}8${NC}) BBR TCP 调优"
         box_line "  0) 退出"         "  ${RED}0${NC}) 退出"
         box_bot
         echo ""
-        read -rp "  请选择功能 [0-7]: " CHOICE
+        read -rp "  请选择功能 [0-8]: " CHOICE
 
         case "$CHOICE" in
             1) show_keys ;;
@@ -720,6 +1232,7 @@ main_menu() {
             5) set_login_mode ;;
             6) change_port ;;
             7) fail2ban_menu ;;
+            8) bbr_menu ;;
             0) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项，请重新输入。"; sleep 1; continue ;;
         esac
