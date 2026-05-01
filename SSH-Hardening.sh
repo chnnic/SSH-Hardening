@@ -3111,4 +3111,4 @@ main_menu() {
     done
 }
 
-main_menu# CADDY_MODULE_PLACEHOLDER
+main_menu
