@@ -641,6 +641,36 @@ change_port() {
 # ══════════════════════════════════════════════════════════
 #  Fail2ban 模块
 # ══════════════════════════════════════════════════════════
+# 把 fail2ban 时间格式转为秒（支持 3600、1h、1d、-1 等）
+f2b_to_seconds() {
+    local VAL="$1"
+    # 纯数字直接返回
+    if echo "$VAL" | grep -qE '^-?[0-9]+$'; then
+        echo "$VAL"; return
+    fi
+    # 解析带单位：s/m/h/d/w
+    local NUM; NUM=$(echo "$VAL" | grep -oE '[0-9]+')
+    local UNIT; UNIT=$(echo "$VAL" | grep -oE '[smhdw]' | tail -1)
+    case "$UNIT" in
+        s) echo "$NUM" ;;
+        m) echo $(( NUM * 60 )) ;;
+        h) echo $(( NUM * 3600 )) ;;
+        d) echo $(( NUM * 86400 )) ;;
+        w) echo $(( NUM * 604800 )) ;;
+        *) echo "$NUM" ;;
+    esac
+}
+
+# 把秒数转为可读字符串
+f2b_seconds_to_human() {
+    local SEC="$1"
+    [ "$SEC" = "-1" ] && { echo "永久"; return; }
+    [ "$SEC" -ge 86400 ] && { echo "$(( SEC / 86400 ))天"; return; }
+    [ "$SEC" -ge 3600  ] && { echo "$(( SEC / 3600 ))小时"; return; }
+    [ "$SEC" -ge 60    ] && { echo "$(( SEC / 60 ))分钟"; return; }
+    echo "${SEC}秒"
+}
+
 
 # 检测 fail2ban 是否已安装并运行
 f2b_status() {
@@ -795,8 +825,10 @@ f2b_config_params() {
     [ -z "$CUR_MAX"  ] && CUR_MAX="5"
 
     echo -e "  当前配置："
-    echo -e "  封禁时长  (bantime)  : ${BOLD}${CUR_BAN}${NC} 秒  $(( CUR_BAN / 60 )) 分钟"
-    echo -e "  时间窗口  (findtime) : ${BOLD}${CUR_FIND}${NC} 秒  $(( CUR_FIND / 60 )) 分钟"
+    local _BAN_S; _BAN_S=$(f2b_to_seconds "$CUR_BAN")
+    local _FIND_S; _FIND_S=$(f2b_to_seconds "$CUR_FIND")
+    echo -e "  封禁时长  (bantime)  : ${BOLD}${CUR_BAN}${NC}  （$(f2b_seconds_to_human "$_BAN_S")）"
+    echo -e "  时间窗口  (findtime) : ${BOLD}${CUR_FIND}${NC}  （$(f2b_seconds_to_human "$_FIND_S")）"
     echo -e "  最大重试  (maxretry) : ${BOLD}${CUR_MAX}${NC} 次"
     echo ""
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
@@ -1063,12 +1095,14 @@ fail2ban_menu() {
         [ -z "$CUR_FIND" ] && CUR_FIND="600"
         [ -z "$CUR_MAX" ]  && CUR_MAX="5"
         [ -z "$CUR_PORT" ] && CUR_PORT="ssh"
-        local BAN_MIN=$(( CUR_BAN / 60 ))
-        local FIND_MIN=$(( CUR_FIND / 60 ))
+        local BAN_SEC; BAN_SEC=$(f2b_to_seconds "$CUR_BAN")
+        local FIND_SEC; FIND_SEC=$(f2b_to_seconds "$CUR_FIND")
+        local BAN_HUMAN; BAN_HUMAN=$(f2b_seconds_to_human "$BAN_SEC")
+        local FIND_HUMAN; FIND_HUMAN=$(f2b_seconds_to_human "$FIND_SEC")
 
         box_line "  服务: ${F2B_ST}  jail: ${JAIL_NAME}"                  "  服务: ${F2B_COLOR}${BOLD}${F2B_ST}${NC}  jail: ${BOLD}${JAIL_NAME}${NC}"
         box_line "  封禁IP: ${BANNED_COUNT}  总失败: ${TOTAL_FAIL}  监控端口: ${CUR_PORT}"                  "  封禁IP: ${RED}${BOLD}${BANNED_COUNT}${NC}  总失败: ${YELLOW}${BOLD}${TOTAL_FAIL}${NC}  端口: ${BOLD}${CUR_PORT}${NC}"
-        box_line "  封禁时长: ${BAN_MIN}min  窗口: ${FIND_MIN}min  最大重试: ${CUR_MAX}次"                  "  封禁时长: ${BOLD}${BAN_MIN}min${NC}  窗口: ${BOLD}${FIND_MIN}min${NC}  最大重试: ${BOLD}${CUR_MAX}${NC}次"
+        box_line "  封禁时长: ${BAN_HUMAN}  窗口: ${FIND_HUMAN}  最大重试: ${CUR_MAX}次"                  "  封禁时长: ${BOLD}${BAN_HUMAN}${NC}  窗口: ${BOLD}${FIND_HUMAN}${NC}  最大重试: ${BOLD}${CUR_MAX}${NC}次"
         box_sep
         box_line "  1) 查看封禁 IP 列表" "  ${GREEN}1${NC}) 查看封禁 IP 列表"
         box_line "  2) 手动解封 IP"      "  ${GREEN}2${NC}) 手动解封 IP"
