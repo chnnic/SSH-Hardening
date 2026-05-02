@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 — 银趴火山帮
+#  VPS 开荒脚本 V1.10 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -70,7 +70,7 @@ print_header() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本"
+    box_title "VPS 开荒脚本 V1.10"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1080,7 +1080,7 @@ fail2ban_menu() {
         clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本"
+        box_title "VPS 开荒脚本 V1.10"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -3309,7 +3309,7 @@ main_menu() {
         clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本"
+        box_title "VPS 开荒脚本 V1.10"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_line "  端口 ${CUR_PORT:-22}  |  公钥数 ${KEYCOUNT}" \
