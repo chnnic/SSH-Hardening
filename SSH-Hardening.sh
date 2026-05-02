@@ -2960,9 +2960,8 @@ caddy_list_sites() {
 # ── 添加反向代理站点 ──────────────────────────────────────
 caddy_add_proxy() {
     print_header "添加反向代理站点"
-    echo -e "  Caddy 将自动申请 Let's Encrypt SSL 证书"
     echo ""
-    read -rp "  域名（如 example.com）: " DOMAIN
+    read -rp "  域名（如 example.com 或 example.com:8443）: " DOMAIN
     [ -z "$DOMAIN" ] && { warn "已取消"; return; }
     read -rp "  转发到（如 127.0.0.1:8080）: " BACKEND
     [ -z "$BACKEND" ] && { warn "已取消"; return; }
@@ -2972,10 +2971,33 @@ caddy_add_proxy() {
         warn "域名 ${DOMAIN} 已存在，请先删除再添加"; return
     fi
 
+    # 判断是否需要自动 HTTPS
+    # 裸域名/含子域名 → 提示可自动 HTTPS；带端口/IP → 不自动 HTTPS
+    local USE_HTTPS=false
+    local SSL_LABEL="${YELLOW}不启用（手动指定了端口或 IP）${NC}"
+    if echo "$DOMAIN" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9\-]*\.)+[a-zA-Z]{2,}$'; then
+        # 纯域名，询问是否启用
+        echo ""
+        echo -e "  ${GREEN}1${NC}) 启用自动 HTTPS（Let's Encrypt，需要域名已解析到本机）"
+        echo -e "  ${GREEN}2${NC}) 不启用 HTTPS（仅 HTTP）"
+        echo ""
+        read -rp "  请选择 [1/2，默认1]: " SSL_CHOICE
+        SSL_CHOICE="${SSL_CHOICE:-1}"
+        if [ "$SSL_CHOICE" = "1" ]; then
+            USE_HTTPS=true
+            SSL_LABEL="${GREEN}自动 HTTPS（Let's Encrypt）${NC}"
+        else
+            DOMAIN="http://${DOMAIN}"
+            SSL_LABEL="${YELLOW}仅 HTTP${NC}"
+        fi
+    fi
+
     echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo -e "  域名 : ${BOLD}${DOMAIN}${NC}"
     echo -e "  后端 : ${BOLD}${BACKEND}${NC}"
-    echo -e "  SSL  : ${GREEN}自动${NC}"
+    echo -e "  SSL  : ${SSL_LABEL}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
     read -rp "  确认添加？(yes/no): " CONFIRM
     [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
@@ -2990,7 +3012,7 @@ caddy_add_proxy() {
 caddy_add_static() {
     print_header "添加静态网站"
     echo ""
-    read -rp "  域名（如 example.com）: " DOMAIN
+    read -rp "  域名（如 example.com 或 example.com:8080）: " DOMAIN
     [ -z "$DOMAIN" ] && { warn "已取消"; return; }
     read -rp "  网站根目录（默认 /var/www/html）: " WEBROOT
     WEBROOT="${WEBROOT:-/var/www/html}"
@@ -2999,10 +3021,28 @@ caddy_add_static() {
         warn "域名 ${DOMAIN} 已存在，请先删除再添加"; return
     fi
 
+    local SSL_LABEL="${YELLOW}不启用（手动指定了端口或 IP）${NC}"
+    if echo "$DOMAIN" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9\-]*\.)+[a-zA-Z]{2,}$'; then
+        echo ""
+        echo -e "  ${GREEN}1${NC}) 启用自动 HTTPS（Let's Encrypt）"
+        echo -e "  ${GREEN}2${NC}) 不启用 HTTPS（仅 HTTP）"
+        echo ""
+        read -rp "  请选择 [1/2，默认1]: " SSL_CHOICE
+        SSL_CHOICE="${SSL_CHOICE:-1}"
+        if [ "$SSL_CHOICE" != "1" ]; then
+            DOMAIN="http://${DOMAIN}"
+            SSL_LABEL="${YELLOW}仅 HTTP${NC}"
+        else
+            SSL_LABEL="${GREEN}自动 HTTPS（Let's Encrypt）${NC}"
+        fi
+    fi
+
     echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo -e "  域名 : ${BOLD}${DOMAIN}${NC}"
     echo -e "  目录 : ${BOLD}${WEBROOT}${NC}"
-    echo -e "  SSL  : ${GREEN}自动${NC}"
+    echo -e "  SSL  : ${SSL_LABEL}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
     read -rp "  确认添加？(yes/no): " CONFIRM
     [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
