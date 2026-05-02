@@ -3312,17 +3312,7 @@ main_menu() {
         box_title "VPS 开荒脚本 V1.10"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
-        box_line "  端口 ${CUR_PORT:-22}  |  公钥数 ${KEYCOUNT}" \
-                 "  端口 ${BOLD}${CUR_PORT:-22}${NC}  |  公钥数 ${BOLD}${KEYCOUNT}${NC}"
-        box_line "  密码登录 ${CUR_PWD:-未设置}  |  公钥认证 ${CUR_PUBKEY:-未设置}" \
-                 "  密码登录 ${BOLD}${CUR_PWD:-未设置}${NC}  |  公钥认证 ${BOLD}${CUR_PUBKEY:-未设置}${NC}"
-        if [ "$F2B_STAT" = "running" ]; then
-            box_line "  Fail2ban: running" "  Fail2ban: ${GREEN}${BOLD}running${NC}"
-        elif [ "$F2B_STAT" = "stopped" ]; then
-            box_line "  Fail2ban: stopped" "  Fail2ban: ${RED}${BOLD}stopped${NC}"
-        else
-            box_line "  Fail2ban: 未安装" "  Fail2ban: ${YELLOW}${BOLD}未安装${NC}"
-        fi
+        # 收集状态数据
         local FW_TYPE FW_STAT FW_COLOR
         FW_TYPE=$(fw_detect)
         if [ "$FW_TYPE" = "none" ]; then
@@ -3334,8 +3324,6 @@ main_menu() {
         fi
         local BBR_CC; BBR_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
         local TC_RATE; TC_RATE=$(tc qdisc show dev "$(ip route | awk '/^default/{print $5}')" 2>/dev/null | grep -oE '(maxrate|rate) [^ ]+' | head -1 | awk '{print $2}'); [ -z "$TC_RATE" ] && TC_RATE="无限速"
-        box_line "  BBR: ${BBR_CC}  |  限速: ${TC_RATE}" "  BBR: ${BOLD}${BBR_CC}${NC}  |  限速: ${BOLD}${TC_RATE}${NC}"
-        box_line "  防火墙: ${FW_STAT}" "  防火墙: ${FW_COLOR}${BOLD}${FW_STAT}${NC}"
         local CADDY_ST; CADDY_ST=$(caddy_status)
         local CADDY_COLOR CADDY_LABEL
         case "$CADDY_ST" in
@@ -3343,6 +3331,18 @@ main_menu() {
             stopped)       CADDY_COLOR="$RED";    CADDY_LABEL="stopped" ;;
             not_installed) CADDY_COLOR="$YELLOW"; CADDY_LABEL="未安装" ;;
         esac
+        # 按顺序显示
+        box_line "  端口 ${CUR_PORT:-22}  |  公钥数 ${KEYCOUNT}"                  "  端口 ${BOLD}${CUR_PORT:-22}${NC}  |  公钥数 ${BOLD}${KEYCOUNT}${NC}"
+        box_line "  密码登录 ${CUR_PWD:-未设置}  |  公钥认证 ${CUR_PUBKEY:-未设置}"                  "  密码登录 ${BOLD}${CUR_PWD:-未设置}${NC}  |  公钥认证 ${BOLD}${CUR_PUBKEY:-未设置}${NC}"
+        box_line "  BBR: ${BBR_CC}  |  限速: ${TC_RATE}"                  "  BBR: ${BOLD}${BBR_CC}${NC}  |  限速: ${BOLD}${TC_RATE}${NC}"
+        if [ "$F2B_STAT" = "running" ]; then
+            box_line "  Fail2ban: running" "  Fail2ban: ${GREEN}${BOLD}running${NC}"
+        elif [ "$F2B_STAT" = "stopped" ]; then
+            box_line "  Fail2ban: stopped" "  Fail2ban: ${RED}${BOLD}stopped${NC}"
+        else
+            box_line "  Fail2ban: 未安装"  "  Fail2ban: ${YELLOW}${BOLD}未安装${NC}"
+        fi
+        box_line "  防火墙: ${FW_STAT}" "  防火墙: ${FW_COLOR}${BOLD}${FW_STAT}${NC}"
         box_line "  Caddy: ${CADDY_LABEL}" "  Caddy: ${CADDY_COLOR}${BOLD}${CADDY_LABEL}${NC}"
         box_sep
         box_line "  1) SSH 工具集"   "  ${GREEN}1${NC}) SSH 工具集"
