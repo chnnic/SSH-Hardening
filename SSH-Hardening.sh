@@ -2789,10 +2789,82 @@ caddy_status() {
 }
 
 # ── 安装后初始化 ──────────────────────────────────────────
+
+# ── 读取/设置全局 SSL 邮箱 ────────────────────────────────
+caddy_get_email() {
+    grep -oE 'email\s+\S+@\S+' "$CADDYFILE" 2>/dev/null | head -1 | awk '{print $2}'
+}
+
+caddy_set_email() {
+    local EMAIL="$1"
+    if grep -qE '^\s*email\s+' "$CADDYFILE" 2>/dev/null; then
+        sed -i "s|^\s*email\s.*|    email ${EMAIL}|" "$CADDYFILE"
+    else
+        # 检查是否有全局块
+        if grep -q "^{" "$CADDYFILE" 2>/dev/null; then
+            # 在 { 后插入 email
+            sed -i "/^{/a\    email ${EMAIL}" "$CADDYFILE"
+        else
+            # 在文件开头插入全局块
+            local TMP; TMP=$(mktemp)
+            echo -e "{\n    email ${EMAIL}\n}\n" | cat - "$CADDYFILE" > "$TMP"
+            mv "$TMP" "$CADDYFILE"
+        fi
+    fi
+    info "SSL 邮箱已设置为：${EMAIL} ✓"
+}
+
+caddy_config_email() {
+    print_header "配置 SSL 邮箱"
+    local CUR_EMAIL; CUR_EMAIL=$(caddy_get_email)
+    if [ -n "$CUR_EMAIL" ]; then
+        echo -e "  当前邮箱：${BOLD}${CUR_EMAIL}${NC}"
+    else
+        echo -e "  当前邮箱：${YELLOW}未设置${NC}"
+    fi
+    echo ""
+    echo -e "  ${DIM}邮箱用于 Let's Encrypt 证书申请和到期提醒${NC}"
+    echo ""
+    read -rp "  请输入邮箱地址（直接回车取消）: " NEW_EMAIL
+    [ -z "$NEW_EMAIL" ] && { warn "已取消"; return; }
+    if ! echo "$NEW_EMAIL" | grep -qE '^[^@]+@[^@]+\.[^@]+$'; then
+        error "邮箱格式不正确"; return
+    fi
+    caddy_set_email "$NEW_EMAIL"
+    caddy_reload_config
+}
+
 caddy_post_install() {
     mkdir -p /etc/caddy /var/log/caddy
+
     if [ ! -f "$CADDYFILE" ]; then
-        cat > "$CADDYFILE" << 'CEOF'
+        # 询问邮箱
+        echo ""
+        echo -e "  ${DIM}邮箱用于 Let's Encrypt 证书申请和到期提醒（可选，直接回车跳过）${NC}"
+        read -rp "  请输入 SSL 邮箱地址: " SETUP_EMAIL
+
+        if echo "$SETUP_EMAIL" | grep -qE '^[^@]+@[^@]+\.[^@]+$'; then
+            cat > "$CADDYFILE" << CEOF
+# Caddy 配置文件 — 由 VPS 开荒脚本生成
+# 文档：https://caddyserver.com/docs/caddyfile
+{
+    email ${SETUP_EMAIL}
+}
+
+# 反向代理示例：
+# example.com {
+#     reverse_proxy localhost:8080
+# }
+
+# 静态网站示例：
+# example.com {
+#     root * /var/www/html
+#     file_server
+# }
+CEOF
+            info "已创建 Caddyfile 并配置邮箱：${SETUP_EMAIL}"
+        else
+            cat > "$CADDYFILE" << 'CEOF'
 # Caddy 配置文件 — 由 VPS 开荒脚本生成
 # 文档：https://caddyserver.com/docs/caddyfile
 
@@ -2807,7 +2879,8 @@ caddy_post_install() {
 #     file_server
 # }
 CEOF
-        info "已创建默认 Caddyfile：$CADDYFILE"
+            info "已创建默认 Caddyfile（未设置邮箱，可在菜单中配置）"
+        fi
     fi
     svc_enable caddy
     systemctl start caddy 2>/dev/null || rc-service caddy start 2>/dev/null || true
@@ -2960,36 +3033,76 @@ caddy_list_sites() {
 # ── 添加反向代理站点 ──────────────────────────────────────
 caddy_add_proxy() {
     print_header "添加反向代理站点"
+    echo -e "  ${DIM}Caddy 会自动申请 SSL 证书（需域名已解析到本机）${NC}"
     echo ""
-    read -rp "  域名（如 example.com 或 example.com:8443）: " DOMAIN
+    read -rp "  域名（如 example.com 或 example.com:36366）: " DOMAIN
     [ -z "$DOMAIN" ] && { warn "已取消"; return; }
     read -rp "  转发到（如 127.0.0.1:8080）: " BACKEND
     [ -z "$BACKEND" ] && { warn "已取消"; return; }
-    # 不添加协议前缀，保持用户输入原样
 
     if grep -q "^${DOMAIN}" "$CADDYFILE" 2>/dev/null; then
         warn "域名 ${DOMAIN} 已存在，请先删除再添加"; return
     fi
 
-    # 判断是否需要自动 HTTPS
-    # 裸域名/含子域名 → 提示可自动 HTTPS；带端口/IP → 不自动 HTTPS
-    local USE_HTTPS=false
-    local SSL_LABEL="${YELLOW}不启用（手动指定了端口或 IP）${NC}"
-    if echo "$DOMAIN" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9\-]*\.)+[a-zA-Z]{2,}$'; then
-        # 纯域名，询问是否启用
-        echo ""
-        echo -e "  ${GREEN}1${NC}) 启用自动 HTTPS（Let's Encrypt，需要域名已解析到本机）"
-        echo -e "  ${GREEN}2${NC}) 不启用 HTTPS（仅 HTTP）"
-        echo ""
-        read -rp "  请选择 [1/2，默认1]: " SSL_CHOICE
-        SSL_CHOICE="${SSL_CHOICE:-1}"
-        if [ "$SSL_CHOICE" = "1" ]; then
-            USE_HTTPS=true
-            SSL_LABEL="${GREEN}自动 HTTPS（Let's Encrypt）${NC}"
+    # 判断是否是带端口的域名（如 example.com:36366）
+    local HAS_PORT=false
+    local BARE_DOMAIN="$DOMAIN"
+    if echo "$DOMAIN" | grep -qE '^[a-zA-Z0-9].*:[0-9]+$'; then
+        HAS_PORT=true
+        BARE_DOMAIN=$(echo "$DOMAIN" | cut -d: -f1)
+    fi
+
+    # 判断是否是域名（非 IP）
+    local IS_DOMAIN=false
+    if echo "$BARE_DOMAIN" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9\-]*\.)+[a-zA-Z]{2,}$'; then
+        IS_DOMAIN=true
+    fi
+
+    local SSL_LABEL CADDY_BLOCK
+    if [ "$IS_DOMAIN" = true ]; then
+        if [ "$HAS_PORT" = true ]; then
+            # 带端口域名：需要显式加 tls 指令才能申请证书
+            SSL_LABEL="${GREEN}自动 HTTPS（带端口，使用 tls 指令）${NC}"
+            CADDY_BLOCK=$(printf '
+%s {
+    tls {
+        on_demand
+    }
+    reverse_proxy %s
+    encode gzip
+    log {
+        output file %s
+        format json
+    }
+}
+'                 "$DOMAIN" "$BACKEND" "$CADDY_LOG")
         else
-            DOMAIN="http://${DOMAIN}"
-            SSL_LABEL="${YELLOW}仅 HTTP${NC}"
+            # 标准域名：Caddy 自动 HTTPS
+            SSL_LABEL="${GREEN}自动 HTTPS（Let's Encrypt）${NC}"
+            CADDY_BLOCK=$(printf '
+%s {
+    reverse_proxy %s
+    encode gzip
+    log {
+        output file %s
+        format json
+    }
+}
+'                 "$DOMAIN" "$BACKEND" "$CADDY_LOG")
         fi
+    else
+        # IP 地址：不申请证书
+        SSL_LABEL="${YELLOW}无 SSL（IP 地址无法申请证书）${NC}"
+        CADDY_BLOCK=$(printf '
+http://%s {
+    reverse_proxy %s
+    encode gzip
+    log {
+        output file %s
+        format json
+    }
+}
+'             "$DOMAIN" "$BACKEND" "$CADDY_LOG")
     fi
 
     echo ""
@@ -3002,17 +3115,16 @@ caddy_add_proxy() {
     read -rp "  确认添加？(yes/no): " CONFIRM
     [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
 
-    printf '\n%s {\n    reverse_proxy %s\n    encode gzip\n    log {\n        output file %s\n        format json\n    }\n}\n' \
-        "$DOMAIN" "$BACKEND" "$CADDY_LOG" >> "$CADDYFILE"
-
+    echo "$CADDY_BLOCK" >> "$CADDYFILE"
     caddy_reload_config && info "站点 ${DOMAIN} 已添加 ✓"
 }
 
 # ── 添加静态网站 ──────────────────────────────────────────
 caddy_add_static() {
     print_header "添加静态网站"
+    echo -e "  ${DIM}Caddy 会自动申请 SSL 证书（需域名已解析到本机）${NC}"
     echo ""
-    read -rp "  域名（如 example.com 或 example.com:8080）: " DOMAIN
+    read -rp "  域名（如 example.com 或 example.com:8443）: " DOMAIN
     [ -z "$DOMAIN" ] && { warn "已取消"; return; }
     read -rp "  网站根目录（默认 /var/www/html）: " WEBROOT
     WEBROOT="${WEBROOT:-/var/www/html}"
@@ -3021,20 +3133,63 @@ caddy_add_static() {
         warn "域名 ${DOMAIN} 已存在，请先删除再添加"; return
     fi
 
-    local SSL_LABEL="${YELLOW}不启用（手动指定了端口或 IP）${NC}"
-    if echo "$DOMAIN" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9\-]*\.)+[a-zA-Z]{2,}$'; then
-        echo ""
-        echo -e "  ${GREEN}1${NC}) 启用自动 HTTPS（Let's Encrypt）"
-        echo -e "  ${GREEN}2${NC}) 不启用 HTTPS（仅 HTTP）"
-        echo ""
-        read -rp "  请选择 [1/2，默认1]: " SSL_CHOICE
-        SSL_CHOICE="${SSL_CHOICE:-1}"
-        if [ "$SSL_CHOICE" != "1" ]; then
-            DOMAIN="http://${DOMAIN}"
-            SSL_LABEL="${YELLOW}仅 HTTP${NC}"
+    local HAS_PORT=false
+    local BARE_DOMAIN="$DOMAIN"
+    if echo "$DOMAIN" | grep -qE '^[a-zA-Z0-9].*:[0-9]+$'; then
+        HAS_PORT=true
+        BARE_DOMAIN=$(echo "$DOMAIN" | cut -d: -f1)
+    fi
+
+    local IS_DOMAIN=false
+    if echo "$BARE_DOMAIN" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9\-]*\.)+[a-zA-Z]{2,}$'; then
+        IS_DOMAIN=true
+    fi
+
+    local SSL_LABEL CADDY_BLOCK
+    if [ "$IS_DOMAIN" = true ]; then
+        if [ "$HAS_PORT" = true ]; then
+            SSL_LABEL="${GREEN}自动 HTTPS（带端口，使用 tls 指令）${NC}"
+            CADDY_BLOCK=$(printf '
+%s {
+    tls {
+        on_demand
+    }
+    root * %s
+    file_server
+    encode gzip
+    log {
+        output file %s
+        format json
+    }
+}
+'                 "$DOMAIN" "$WEBROOT" "$CADDY_LOG")
         else
             SSL_LABEL="${GREEN}自动 HTTPS（Let's Encrypt）${NC}"
+            CADDY_BLOCK=$(printf '
+%s {
+    root * %s
+    file_server
+    encode gzip
+    log {
+        output file %s
+        format json
+    }
+}
+'                 "$DOMAIN" "$WEBROOT" "$CADDY_LOG")
         fi
+    else
+        SSL_LABEL="${YELLOW}无 SSL（IP 地址无法申请证书）${NC}"
+        CADDY_BLOCK=$(printf '
+http://%s {
+    root * %s
+    file_server
+    encode gzip
+    log {
+        output file %s
+        format json
+    }
+}
+'             "$DOMAIN" "$WEBROOT" "$CADDY_LOG")
     fi
 
     echo ""
@@ -3048,9 +3203,7 @@ caddy_add_static() {
     [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
 
     mkdir -p "$WEBROOT"
-    printf '\n%s {\n    root * %s\n    file_server\n    encode gzip\n    log {\n        output file %s\n        format json\n    }\n}\n' \
-        "$DOMAIN" "$WEBROOT" "$CADDY_LOG" >> "$CADDYFILE"
-
+    echo "$CADDY_BLOCK" >> "$CADDYFILE"
     caddy_reload_config && info "静态站点 ${DOMAIN} 已添加 ✓"
 }
 
@@ -3281,6 +3434,10 @@ caddy_menu() {
 
         echo -e "  服务: ${C_COLOR}${BOLD}${C_ST}${NC}  版本: ${BOLD}${C_VER:-未知}${NC}  站点数: ${BOLD}${SITE_COUNT}${NC}"
         echo ""
+        local CUR_EMAIL; CUR_EMAIL=$(caddy_get_email)
+        [ -z "$CUR_EMAIL" ] && CUR_EMAIL="${YELLOW}未设置${NC}" || CUR_EMAIL="${BOLD}${CUR_EMAIL}${NC}"
+        echo -e "  SSL邮箱: $CUR_EMAIL"
+        echo ""
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo -e "  ${GREEN}1${NC}) 查看所有站点"
         echo -e "  ${GREEN}2${NC}) 添加反向代理站点"
@@ -3290,6 +3447,7 @@ caddy_menu() {
         echo -e "  ${GREEN}6${NC}) 查看访问日志"
         echo -e "  ${GREEN}7${NC}) 编辑 Caddyfile"
         echo -e "  ${GREEN}8${NC}) 重载配置"
+        echo -e "  ${GREEN}9${NC}) 配置 SSL 邮箱"
         if [ "$C_ST" = "running" ]; then
             echo -e "  ${YELLOW}9${NC}) 停止服务"
         else
@@ -3311,6 +3469,7 @@ caddy_menu() {
             6) caddy_view_logs ;;
             7) caddy_edit_raw ;;
             8) caddy_reload_config ;;
+            9) caddy_config_email ;;
             9)
                 if [ "$C_ST" = "running" ]; then
                     systemctl stop caddy 2>/dev/null || rc-service caddy stop 2>/dev/null
