@@ -2790,81 +2790,10 @@ caddy_status() {
 
 # ── 安装后初始化 ──────────────────────────────────────────
 
-# ── 读取/设置全局 SSL 邮箱 ────────────────────────────────
-caddy_get_email() {
-    grep -oE 'email\s+\S+@\S+' "$CADDYFILE" 2>/dev/null | head -1 | awk '{print $2}'
-}
-
-caddy_set_email() {
-    local EMAIL="$1"
-    if grep -qE '^\s*email\s+' "$CADDYFILE" 2>/dev/null; then
-        sed -i "s|^\s*email\s.*|    email ${EMAIL}|" "$CADDYFILE"
-    else
-        # 检查是否有全局块
-        if grep -q "^{" "$CADDYFILE" 2>/dev/null; then
-            # 在 { 后插入 email
-            sed -i "/^{/a\    email ${EMAIL}" "$CADDYFILE"
-        else
-            # 在文件开头插入全局块
-            local TMP; TMP=$(mktemp)
-            echo -e "{\n    email ${EMAIL}\n}\n" | cat - "$CADDYFILE" > "$TMP"
-            mv "$TMP" "$CADDYFILE"
-        fi
-    fi
-    info "SSL 邮箱已设置为：${EMAIL} ✓"
-}
-
-caddy_config_email() {
-    print_header "配置 SSL 邮箱"
-    local CUR_EMAIL; CUR_EMAIL=$(caddy_get_email)
-    if [ -n "$CUR_EMAIL" ]; then
-        echo -e "  当前邮箱：${BOLD}${CUR_EMAIL}${NC}"
-    else
-        echo -e "  当前邮箱：${YELLOW}未设置${NC}"
-    fi
-    echo ""
-    echo -e "  ${DIM}邮箱用于 Let's Encrypt 证书申请和到期提醒${NC}"
-    echo ""
-    read -rp "  请输入邮箱地址（直接回车取消）: " NEW_EMAIL
-    [ -z "$NEW_EMAIL" ] && { warn "已取消"; return; }
-    if ! echo "$NEW_EMAIL" | grep -qE '^[^@]+@[^@]+\.[^@]+$'; then
-        error "邮箱格式不正确"; return
-    fi
-    caddy_set_email "$NEW_EMAIL"
-    caddy_reload_config
-}
-
 caddy_post_install() {
     mkdir -p /etc/caddy /var/log/caddy
-
     if [ ! -f "$CADDYFILE" ]; then
-        # 询问邮箱
-        echo ""
-        echo -e "  ${DIM}邮箱用于 Let's Encrypt 证书申请和到期提醒（可选，直接回车跳过）${NC}"
-        read -rp "  请输入 SSL 邮箱地址: " SETUP_EMAIL
-
-        if echo "$SETUP_EMAIL" | grep -qE '^[^@]+@[^@]+\.[^@]+$'; then
-            cat > "$CADDYFILE" << CEOF
-# Caddy 配置文件 — 由 VPS 开荒脚本生成
-# 文档：https://caddyserver.com/docs/caddyfile
-{
-    email ${SETUP_EMAIL}
-}
-
-# 反向代理示例：
-# example.com {
-#     reverse_proxy localhost:8080
-# }
-
-# 静态网站示例：
-# example.com {
-#     root * /var/www/html
-#     file_server
-# }
-CEOF
-            info "已创建 Caddyfile 并配置邮箱：${SETUP_EMAIL}"
-        else
-            cat > "$CADDYFILE" << 'CEOF'
+        cat > "$CADDYFILE" << 'CEOF'
 # Caddy 配置文件 — 由 VPS 开荒脚本生成
 # 文档：https://caddyserver.com/docs/caddyfile
 
@@ -2879,8 +2808,7 @@ CEOF
 #     file_server
 # }
 CEOF
-            info "已创建默认 Caddyfile（未设置邮箱，可在菜单中配置）"
-        fi
+        info "已创建默认 Caddyfile：$CADDYFILE"
     fi
     svc_enable caddy
     systemctl start caddy 2>/dev/null || rc-service caddy start 2>/dev/null || true
@@ -3434,10 +3362,6 @@ caddy_menu() {
 
         echo -e "  服务: ${C_COLOR}${BOLD}${C_ST}${NC}  版本: ${BOLD}${C_VER:-未知}${NC}  站点数: ${BOLD}${SITE_COUNT}${NC}"
         echo ""
-        local CUR_EMAIL; CUR_EMAIL=$(caddy_get_email)
-        [ -z "$CUR_EMAIL" ] && CUR_EMAIL="${YELLOW}未设置${NC}" || CUR_EMAIL="${BOLD}${CUR_EMAIL}${NC}"
-        echo -e "  SSL邮箱: $CUR_EMAIL"
-        echo ""
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo -e "  ${GREEN}1${NC}) 查看所有站点"
         echo -e "  ${GREEN}2${NC}) 添加反向代理站点"
@@ -3447,7 +3371,6 @@ caddy_menu() {
         echo -e "  ${GREEN}6${NC}) 查看访问日志"
         echo -e "  ${GREEN}7${NC}) 编辑 Caddyfile"
         echo -e "  ${GREEN}8${NC}) 重载配置"
-        echo -e "  ${GREEN}9${NC}) 配置 SSL 邮箱"
         if [ "$C_ST" = "running" ]; then
             echo -e "  ${YELLOW}9${NC}) 停止服务"
         else
@@ -3469,7 +3392,6 @@ caddy_menu() {
             6) caddy_view_logs ;;
             7) caddy_edit_raw ;;
             8) caddy_reload_config ;;
-            9) caddy_config_email ;;
             9)
                 if [ "$C_ST" = "running" ]; then
                     systemctl stop caddy 2>/dev/null || rc-service caddy stop 2>/dev/null
