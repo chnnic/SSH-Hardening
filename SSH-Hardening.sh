@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V1.11 — 银趴火山帮
+#  VPS 开荒脚本 V1.12 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -347,9 +347,9 @@ firewall_allow_port() {
 
     echo ""
     warn "检测到活跃防火墙，是否自动放行新端口 ${PORT}/tcp？"
-    read -rp "  自动放行？(yes/no，默认 yes): " FW_CONFIRM
-    FW_CONFIRM="${FW_CONFIRM:-yes}"
-    if [ "$FW_CONFIRM" != "yes" ]; then
+    read -rp "  自动放行？(Y/n，默认Y): " FW_CONFIRM
+    FW_CONFIRM="${FW_CONFIRM:-y}"
+    if ! echo "$FW_CONFIRM" | grep -qiE '^y(es)?$'; then
         warn "已跳过，请在防火墙管理中手动添加端口 $PORT"
         return 0
     fi
@@ -437,8 +437,9 @@ delete_key() {
     warn "即将删除以下公钥："
     echo -e "  ${RED}$(echo "$TARGET_LINE" | awk '{print $1, $3}')${NC}"
     echo ""
-    read -rp "  确认删除？(yes/no): " CONFIRM
-    [ "$CONFIRM" != "yes" ] && { warn "已取消。"; return; }
+    read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
+    [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
     grep -vF "$TARGET_LINE" "$AUTH_KEYS" > "${AUTH_KEYS}.tmp" && mv "${AUTH_KEYS}.tmp" "$AUTH_KEYS"
     chmod 600 "$AUTH_KEYS"
@@ -504,8 +505,9 @@ generate_key() {
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
 
-    read -rp "  是否将公钥添加到本服务器？(yes/no): " ADD_CONFIRM
-    if [ "$ADD_CONFIRM" = "yes" ]; then
+    read -rp "  是否将公钥添加到本服务器？(Y/n，默认Y): " ADD_CONFIRM
+    [ -z "${ADD_CONFIRM}" ] && ADD_CONFIRM="y"
+    if echo "${ADD_CONFIRM}" | grep -qiE '^y(es)?$'; then
         mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
         echo "$PUBKEY" >> "$AUTH_KEYS"; chmod 600 "$AUTH_KEYS"
         local TOTAL
@@ -549,8 +551,9 @@ set_login_mode() {
         local F2B_STAT; F2B_STAT=$(f2b_status)
             if [ "$KEYCOUNT" -eq 0 ]; then
                 warn "当前没有公钥！启用仅密钥登录后将无法通过密码登录！"
-                read -rp "  仍要继续？(yes/no): " FORCE
-                [ "$FORCE" != "yes" ] && { warn "已取消。"; return; }
+                read -rp "  仍要继续？(Y/n，默认Y): " FORCE
+                [ -z "${FORCE}" ] && FORCE="y"
+    if ! echo "${FORCE}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
             fi
             backup_config
             set_config "PasswordAuthentication" "no"
@@ -567,8 +570,9 @@ set_login_mode() {
             ;;
         3)
             warn "仅密码登录安全性较低，建议配合强密码使用！"
-            read -rp "  确认切换？(yes/no): " CONFIRM
-            [ "$CONFIRM" != "yes" ] && { warn "已取消。"; return; }
+            read -rp "  确认切换？(Y/n，默认Y): " CONFIRM
+            [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
             backup_config
             set_config "PasswordAuthentication" "yes"
             set_config "PubkeyAuthentication"   "no"
@@ -996,8 +1000,9 @@ JAILEOF
             read -rp "  按 Enter 继续..." _
             nano "$JAIL_LOCAL"
             echo ""
-            read -rp "  是否重启 Fail2ban 使配置生效？(yes/no): " RESTART
-            [ "$RESTART" = "yes" ] && restart_fail2ban && info "Fail2ban 已重启 ✓" || true
+            read -rp "  是否重启 Fail2ban 使配置生效？(Y/n，默认Y): " RESTART
+            [ -z "$RESTART" ] && RESTART="y"
+            echo "$RESTART" | grep -qiE '^y(es)?$' && restart_fail2ban && info "Fail2ban 已重启 ✓" || true
             ;;
         2)
             if [ -f "$JAIL_CONF" ]; then
@@ -1020,8 +1025,9 @@ f2b_uninstall() {
     print_header "卸载 Fail2ban"
     warn "即将卸载 Fail2ban，所有配置将被清除！"
     echo ""
-    read -rp "  确认卸载？(yes/no): " CONFIRM
-    [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
+    read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
+    [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
     systemctl stop fail2ban 2>/dev/null
     svc_disable fail2ban
@@ -1176,35 +1182,38 @@ f2b_banned_list() {
 # ── 手动解封 IP ───────────────────────────────────────────
 f2b_unban() {
     local JAIL="${1:-sshd}"
-    print_header "手动解封 IP — $JAIL"
+    while true; do
+        print_header "手动解封 IP — $JAIL"
 
-    # 显示当前封禁列表
-    local RAW
-    RAW=$(fail2ban-client status "$JAIL" 2>/dev/null | grep "Banned IP" | sed 's/.*Banned IP list:\s*//')
+        local RAW
+        RAW=$(fail2ban-client status "$JAIL" 2>/dev/null | grep "Banned IP" | sed 's/.*Banned IP list:\s*//')
 
-    if [ -z "$RAW" ] || [ "$RAW" = "" ]; then
-        echo -e "  ${GREEN}当前没有封禁的 IP，无需解封${NC}"
-        return
-    fi
+        if [ -z "$RAW" ]; then
+            echo -e "  ${GREEN}当前没有封禁的 IP${NC}"
+            echo ""
+            read -rp "  按 Enter 返回..." _
+            return
+        fi
 
-    local i=1 IPS=()
-    for IP in $RAW; do
-        echo -e "  ${RED}[$i]${NC} $IP"
-        IPS+=("$IP")
-        i=$((i+1))
+        local i=1
+        for IP in $RAW; do
+            echo -e "  ${RED}[$i]${NC} $IP"
+            i=$((i+1))
+        done
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${DIM}输入 IP 地址解封，直接回车返回上级${NC}"
+        read -rp "  请输入 IP: " UNBAN_IP
+        [ -z "$UNBAN_IP" ] && return
+
+        echo ""
+        if fail2ban-client set "$JAIL" unbanip "$UNBAN_IP" 2>/dev/null; then
+            info "IP ${BOLD}$UNBAN_IP${NC} 已解封 ✓"
+        else
+            error "解封失败，请确认 IP 地址正确"
+        fi
+        sleep 1
     done
-    echo ""
-
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    read -rp "  输入要解封的 IP 地址（直接回车取消）: " UNBAN_IP
-    [ -z "$UNBAN_IP" ] && { warn "已取消。"; return; }
-
-    echo ""
-    if fail2ban-client set "$JAIL" unbanip "$UNBAN_IP" 2>/dev/null; then
-        info "IP ${BOLD}$UNBAN_IP${NC} 已解封 ✓"
-    else
-        error "解封失败，请确认 IP 地址正确。"
-    fi
 }
 
 # ── 实时日志 ──────────────────────────────────────────────
@@ -1332,7 +1341,7 @@ bbr_restore_sysctl() {
         0) return ;;
         00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
         d|D)
-            read -rp "  确认清除全部 ${#BACKUPS[@]} 个备份？(yes/no): " C
+            read -rp "  确认清除全部 ${#BACKUPS[@]} 个备份？(Y/n，默认Y): " C
             [ "$C" = "yes" ] && rm -f "${SYSCTL_FILE}.bak."* && info "已清除全部备份" || warn "已取消"
             ;;
         *)
@@ -1470,12 +1479,14 @@ bbr_confirm_apply() {
     echo -e "  swappiness   : ${BOLD}${SWAP}${NC}"
     echo -e "  ${YELLOW}──────────────────────────────────────────${NC}"
     echo ""
-    read -rp "  确认应用？(yes/no): " CONFIRM
-    [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
+    read -rp "  确认应用？(Y/n，默认Y): " CONFIRM
+    [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
     if [ -f "$SYSCTL_FILE" ]; then
-        read -rp "  是否备份旧的 sysctl.conf？(yes/no): " DO_BAK
-        [ "$DO_BAK" = "yes" ] && bbr_backup_sysctl
+        read -rp "  是否备份旧的 sysctl.conf？(Y/n，默认Y): " DO_BAK
+        [ -z "$DO_BAK" ] && DO_BAK="y"
+        echo "$DO_BAK" | grep -qiE '^y(es)?$' && bbr_backup_sysctl
     fi
 
     local CONFIG
@@ -1925,18 +1936,22 @@ ufw_add_port() {
 }
 
 ufw_del_port() {
-    print_header "删除端口规则 — ufw"
-    ufw status numbered 2>/dev/null | grep -E '^\[' | while IFS= read -r line; do
-        echo -e "  ${YELLOW}${line}${NC}"
+    while true; do
+        print_header "删除端口规则 — ufw"
+        ufw status numbered 2>/dev/null | grep -E '^\[' | while IFS= read -r line; do
+            echo -e "  ${YELLOW}${line}${NC}"
+        done
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${DIM}输入编号删除，直接回车返回上级${NC}"
+        read -rp "  请输入规则编号: " NUM
+        [ -z "$NUM" ] && return
+        if ! echo "$NUM" | grep -qE '^[0-9]+$'; then
+            error "无效编号"; sleep 1; continue
+        fi
+        echo "y" | ufw delete "$NUM" 2>/dev/null && info "规则 [$NUM] 已删除 ✓" || error "删除失败"
+        sleep 1
     done
-    echo ""
-    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-    read -rp "  请输入要删除的规则编号（直接回车取消）: " NUM
-    [ -z "$NUM" ] && { warn "已取消"; return; }
-    if ! echo "$NUM" | grep -qE '^[0-9]+$'; then
-        error "无效编号"; return
-    fi
-    echo "y" | ufw delete "$NUM" 2>/dev/null && info "规则 [$NUM] 已删除 ✓" || error "删除失败"
 }
 
 ufw_block_ip() {
@@ -1954,14 +1969,19 @@ ufw_allow_ip() {
 }
 
 ufw_del_ip() {
-    print_header "删除 IP 规则 — ufw"
-    ufw status numbered 2>/dev/null | grep -iE 'deny|allow' | grep -E '^\[' | while IFS= read -r line; do
-        echo -e "  ${YELLOW}${line}${NC}"
+    while true; do
+        print_header "删除 IP 规则 — ufw"
+        ufw status numbered 2>/dev/null | grep -iE 'deny|allow' | grep -E '^\[' | while IFS= read -r line; do
+            echo -e "  ${YELLOW}${line}${NC}"
+        done
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${DIM}输入编号删除，直接回车返回上级${NC}"
+        read -rp "  请输入规则编号: " NUM
+        [ -z "$NUM" ] && return
+        echo "y" | ufw delete "$NUM" 2>/dev/null && info "规则 [$NUM] 已删除 ✓" || error "删除失败"
+        sleep 1
     done
-    echo ""
-    read -rp "  请输入要删除的规则编号（直接回车取消）: " NUM
-    [ -z "$NUM" ] && { warn "已取消"; return; }
-    echo "y" | ufw delete "$NUM" 2>/dev/null && info "规则 [$NUM] 已删除 ✓" || error "删除失败"
 }
 
 ufw_quick_allow() {
@@ -1972,8 +1992,9 @@ ufw_quick_allow() {
     echo -e "  ${GREEN}HTTP${NC}  : 80"
     echo -e "  ${GREEN}HTTPS${NC} : 443"
     echo ""
-    read -rp "  确认放行？(yes/no): " CONFIRM
-    [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
+    read -rp "  确认放行？(Y/n，默认Y): " CONFIRM
+    [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
     ufw allow "$SSH_PORT"/tcp  && info "SSH $SSH_PORT 已放行 ✓"
     ufw allow 80/tcp           && info "HTTP 80 已放行 ✓"
     ufw allow 443/tcp          && info "HTTPS 443 已放行 ✓"
@@ -2026,8 +2047,9 @@ ufw_menu() {
             8) ufw_quick_allow ;;
             9)
                 warn "即将卸载 ufw，所有规则将清除"
-                read -rp "  确认卸载？(yes/no): " CONFIRM
-                if [ "$CONFIRM" = "yes" ]; then
+                read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
+                [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then
                     # 完整清理：禁用 → 重置规则 → 卸载 → 清残留
                     ufw --force disable 2>/dev/null
                     ufw --force reset 2>/dev/null
@@ -2132,18 +2154,31 @@ fwd_allow_ip() {
 }
 
 fwd_del_ip() {
-    print_header "删除 IP 规则 — firewalld"
-    echo -e "  当前 Rich Rules："
-    firewall-cmd --list-rich-rules 2>/dev/null | nl | while read -r i r; do
-        echo -e "  ${YELLOW}[$i]${NC} $r"
+    while true; do
+        print_header "删除 IP 规则 — firewalld"
+        echo -e "  当前 Rich Rules："
+        local RULES; RULES=$(firewall-cmd --list-rich-rules 2>/dev/null)
+        if [ -z "$RULES" ]; then
+            echo -e "  ${YELLOW}暂无 IP 规则${NC}"
+            echo ""
+            read -rp "  按 Enter 返回..." _
+            return
+        fi
+        local i=1
+        while IFS= read -r r; do
+            echo -e "  ${YELLOW}[$i]${NC} $r"
+            i=$((i+1))
+        done <<< "$RULES"
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${DIM}输入 IP 地址删除，直接回车返回上级${NC}"
+        read -rp "  请输入 IP: " IP
+        [ -z "$IP" ] && return
+        firewall-cmd --permanent --remove-rich-rule="rule family='ipv4' source address='${IP}' reject" 2>/dev/null
+        firewall-cmd --permanent --remove-rich-rule="rule family='ipv4' source address='${IP}' accept" 2>/dev/null
+        firewall-cmd --reload 2>/dev/null && info "IP $IP 相关规则已删除 ✓" || error "删除失败"
+        sleep 1
     done
-    echo ""
-    read -rp "  请输入要删除的完整 IP（如 1.2.3.4，直接回车取消）: " IP
-    [ -z "$IP" ] && { warn "已取消"; return; }
-    # 尝试删除 reject 和 accept 规则
-    firewall-cmd --permanent --remove-rich-rule="rule family='ipv4' source address='${IP}' reject" 2>/dev/null
-    firewall-cmd --permanent --remove-rich-rule="rule family='ipv4' source address='${IP}' accept" 2>/dev/null
-    firewall-cmd --reload 2>/dev/null && info "IP $IP 相关规则已删除 ✓" || error "删除失败"
 }
 
 fwd_quick_allow() {
@@ -2154,8 +2189,9 @@ fwd_quick_allow() {
     echo -e "  ${GREEN}HTTP${NC}  : 80/tcp"
     echo -e "  ${GREEN}HTTPS${NC} : 443/tcp"
     echo ""
-    read -rp "  确认放行？(yes/no): " CONFIRM
-    [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
+    read -rp "  确认放行？(Y/n，默认Y): " CONFIRM
+    [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
     firewall-cmd --permanent --add-port="${SSH_PORT}/tcp"  && info "SSH $SSH_PORT 已放行 ✓"
     firewall-cmd --permanent --add-port="80/tcp"           && info "HTTP 80 已放行 ✓"
     firewall-cmd --permanent --add-port="443/tcp"          && info "HTTPS 443 已放行 ✓"
@@ -2209,8 +2245,9 @@ fwd_menu() {
             8) fwd_quick_allow ;;
             9)
                 warn "即将卸载 firewalld，所有规则将清除"
-                read -rp "  确认卸载？(yes/no): " CONFIRM
-                if [ "$CONFIRM" = "yes" ]; then
+                read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
+                [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then
                     systemctl stop firewalld 2>/dev/null
                     systemctl disable firewalld 2>/dev/null
                     pkg_remove firewalld
@@ -2669,8 +2706,9 @@ ip_disable_v6() {
     print_header "关闭 IPv6"
     warn "关闭 IPv6 后，仅 IPv6 的服务将无法访问！"
     echo ""
-    read -rp "  确认关闭？(yes/no): " CONFIRM
-    [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
+    read -rp "  确认关闭？(Y/n，默认Y): " CONFIRM
+    [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
     local SYSCTL_FILE="/etc/sysctl.conf"
 
@@ -2902,8 +2940,9 @@ caddy_uninstall() {
     print_header "卸载 Caddy"
     warn "即将卸载 Caddy（配置文件保留）"
     echo ""
-    read -rp "  确认卸载？(yes/no): " CONFIRM
-    [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
+    read -rp "  确认卸载？(Y/n，默认Y): " CONFIRM
+    [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
     systemctl stop caddy 2>/dev/null || rc-service caddy stop 2>/dev/null || true
     svc_disable caddy
     pkg_remove caddy 2>/dev/null
@@ -3040,8 +3079,9 @@ http://%s {
     echo -e "  SSL  : ${SSL_LABEL}"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
-    read -rp "  确认添加？(yes/no): " CONFIRM
-    [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
+    read -rp "  确认添加？(Y/n，默认Y): " CONFIRM
+    [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
     echo "$CADDY_BLOCK" >> "$CADDYFILE"
     caddy_reload_config && info "站点 ${DOMAIN} 已添加 ✓"
@@ -3127,8 +3167,9 @@ http://%s {
     echo -e "  SSL  : ${SSL_LABEL}"
     echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
     echo ""
-    read -rp "  确认添加？(yes/no): " CONFIRM
-    [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
+    read -rp "  确认添加？(Y/n，默认Y): " CONFIRM
+    [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
     mkdir -p "$WEBROOT"
     echo "$CADDY_BLOCK" >> "$CADDYFILE"
@@ -3168,8 +3209,9 @@ caddy_del_site() {
     local DOMAIN="${SITES[$((NUM-1))]}"
     echo ""
     warn "即将删除站点：${BOLD}${DOMAIN}${NC}"
-    read -rp "  确认删除？(yes/no): " CONFIRM
-    [ "$CONFIRM" != "yes" ] && { warn "已取消"; return; }
+    read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
+    [ -z "${CONFIRM}" ] && CONFIRM="y"
+    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
 
     python3 - "$CADDYFILE" "$DOMAIN" << 'PYEOF'
 import sys
