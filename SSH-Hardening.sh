@@ -3303,13 +3303,13 @@ main_menu() {
         box_line "  BBR: ${BBR_CC}  |  限速: ${TC_RATE}" "  BBR: ${BOLD}${BBR_CC}${NC}  |  限速: ${BOLD}${TC_RATE}${NC}"
         box_line "  防火墙: ${FW_STAT}" "  防火墙: ${FW_COLOR}${BOLD}${FW_STAT}${NC}"
         local CADDY_ST; CADDY_ST=$(caddy_status)
-        local CADDY_COLOR
+        local CADDY_COLOR CADDY_LABEL
         case "$CADDY_ST" in
-            running)       CADDY_COLOR="$GREEN" ;;
-            stopped)       CADDY_COLOR="$RED" ;;
-            not_installed) CADDY_COLOR="$YELLOW" ;;
+            running)       CADDY_COLOR="$GREEN";  CADDY_LABEL="running" ;;
+            stopped)       CADDY_COLOR="$RED";    CADDY_LABEL="stopped" ;;
+            not_installed) CADDY_COLOR="$YELLOW"; CADDY_LABEL="未安装" ;;
         esac
-        box_line "  Caddy: ${CADDY_ST}" "  Caddy: ${CADDY_COLOR}${BOLD}${CADDY_ST}${NC}"
+        box_line "  Caddy: ${CADDY_LABEL}" "  Caddy: ${CADDY_COLOR}${BOLD}${CADDY_LABEL}${NC}"
         box_sep
         box_line "  1) SSH 工具集"   "  ${GREEN}1${NC}) SSH 工具集"
         box_line "  2) Fail2ban 管理" "  ${GREEN}2${NC}) Fail2ban 管理"
