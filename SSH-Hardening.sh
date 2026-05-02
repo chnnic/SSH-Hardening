@@ -2965,7 +2965,7 @@ caddy_add_proxy() {
     [ -z "$DOMAIN" ] && { warn "已取消"; return; }
     read -rp "  转发到（如 127.0.0.1:8080）: " BACKEND
     [ -z "$BACKEND" ] && { warn "已取消"; return; }
-    echo "$BACKEND" | grep -qE '^https?://' || BACKEND="http://${BACKEND}"
+    # 不添加协议前缀，保持用户输入原样
 
     if grep -q "^${DOMAIN}" "$CADDYFILE" 2>/dev/null; then
         warn "域名 ${DOMAIN} 已存在，请先删除再添加"; return
