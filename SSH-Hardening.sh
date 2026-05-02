@@ -1009,20 +1009,23 @@ fail2ban_menu() {
         # 若未安装，提示安装
         if [ "$F2B_ST" = "not_installed" ]; then
             print_header "Fail2ban 管理"
-            warn "检测到 Fail2ban 未安装！"
+            warn "Fail2ban 未安装！"
             echo ""
+            echo -e "  ${DIM}Fail2ban 是一个防暴力破解工具，可自动封禁恶意 IP${NC}"
+            echo ""
+            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
             echo -e "  ${GREEN}1${NC}) 立即安装 Fail2ban"
             echo -e "  ${RED}0${NC}) 返回主菜单"
             echo -e "  ${RED}00${NC}) 退出脚本"
+            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
             echo ""
             read -rp "  请选择 [0-1]: " CHOICE
             case "$CHOICE" in
-                1) f2b_install ;;
+                1) f2b_install; echo ""; read -rp "  按 Enter 继续..." _ ;;
                 0) return ;;
                 00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1 ;;
             esac
-            echo ""; read -rp "  按 Enter 继续..." _
             continue
         fi
 
@@ -1988,11 +1991,30 @@ ufw_menu() {
             7) ufw_del_ip ;;
             8) ufw_quick_allow ;;
             9)
-                warn "即将卸载 ufw"
+                warn "即将卸载 ufw，所有规则将清除"
                 read -rp "  确认卸载？(yes/no): " CONFIRM
                 if [ "$CONFIRM" = "yes" ]; then
-                    ufw --force disable 2>/dev/null; pkg_remove ufw
-                    info "ufw 已卸载 ✓"; return
+                    # 完整清理：禁用 → 重置规则 → 卸载 → 清残留
+                    ufw --force disable 2>/dev/null
+                    ufw --force reset 2>/dev/null
+                    pkg_remove ufw
+                    # 清理残留文件（防止重装时读到旧配置）
+                    rm -rf /etc/ufw /lib/ufw /usr/share/ufw 2>/dev/null
+                    # 清理 iptables 残留规则
+                    if command -v iptables &>/dev/null; then
+                        iptables -F 2>/dev/null
+                        iptables -X 2>/dev/null
+                        iptables -P INPUT ACCEPT 2>/dev/null
+                        iptables -P FORWARD ACCEPT 2>/dev/null
+                        iptables -P OUTPUT ACCEPT 2>/dev/null
+                        ip6tables -F 2>/dev/null
+                        ip6tables -X 2>/dev/null
+                        ip6tables -P INPUT ACCEPT 2>/dev/null
+                        ip6tables -P FORWARD ACCEPT 2>/dev/null
+                        ip6tables -P OUTPUT ACCEPT 2>/dev/null
+                    fi
+                    info "ufw 已完整卸载 ✓（iptables 规则已清空，SSH 仍可连接）"
+                    return
                 else
                     warn "已取消"
                 fi
@@ -2128,11 +2150,12 @@ fwd_menu() {
         echo -e "  ${GREEN}6${NC}) 放行 IP（白名单）"
         echo -e "  ${GREEN}7${NC}) 删除 IP 规则"
         echo -e "  ${GREEN}8${NC}) 一键放行常用端口"
+        echo -e "  ${YELLOW}9${NC}) 卸载 firewalld"
         echo -e "  ${RED}0${NC}) 返回"
         echo -e "  ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择 [0-8]: " CH
+        read -rp "  请选择 [0-9]: " CH
 
         case "$CH" in
             1)
@@ -2150,6 +2173,34 @@ fwd_menu() {
             6) fwd_allow_ip ;;
             7) fwd_del_ip ;;
             8) fwd_quick_allow ;;
+            9)
+                warn "即将卸载 firewalld，所有规则将清除"
+                read -rp "  确认卸载？(yes/no): " CONFIRM
+                if [ "$CONFIRM" = "yes" ]; then
+                    systemctl stop firewalld 2>/dev/null
+                    systemctl disable firewalld 2>/dev/null
+                    pkg_remove firewalld
+                    # 清理残留配置
+                    rm -rf /etc/firewalld/zones /etc/firewalld/services 2>/dev/null
+                    # 清理 iptables 残留规则
+                    if command -v iptables &>/dev/null; then
+                        iptables -F 2>/dev/null
+                        iptables -X 2>/dev/null
+                        iptables -P INPUT ACCEPT 2>/dev/null
+                        iptables -P FORWARD ACCEPT 2>/dev/null
+                        iptables -P OUTPUT ACCEPT 2>/dev/null
+                        ip6tables -F 2>/dev/null
+                        ip6tables -X 2>/dev/null
+                        ip6tables -P INPUT ACCEPT 2>/dev/null
+                        ip6tables -P FORWARD ACCEPT 2>/dev/null
+                        ip6tables -P OUTPUT ACCEPT 2>/dev/null
+                    fi
+                    info "firewalld 已完整卸载 ✓（iptables 规则已清空）"
+                    return
+                else
+                    warn "已取消"
+                fi
+                ;;
             0) return ;;
             00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
@@ -2163,36 +2214,39 @@ fwd_menu() {
 #  防火墙总入口
 # ══════════════════════════════════════════════════════════
 firewall_menu() {
-    local FW_TYPE; FW_TYPE=$(fw_detect)
+    while true; do
+        local FW_TYPE; FW_TYPE=$(fw_detect)
 
-    # 未安装：引导安装
-    if [ "$FW_TYPE" = "none" ]; then
-        while true; do
+        if [ "$FW_TYPE" = "none" ]; then
             print_header "防火墙管理"
             warn "未检测到已安装的防火墙！"
             echo ""
+            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
             echo -e "  请选择要安装的防火墙："
             echo -e "  ${GREEN}1${NC}) ufw       （推荐，Ubuntu/Debian 常用）"
             echo -e "  ${GREEN}2${NC}) firewalld （CentOS/Rocky/Fedora 常用）"
             echo -e "  ${RED}0${NC}) 返回主菜单"
             echo -e "  ${RED}00${NC}) 退出脚本"
+            echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
             echo ""
             read -rp "  请选择 [0-2]: " CH
             case "$CH" in
-                1) fw_install "ufw";      echo ""; read -rp "  按 Enter 继续..." _; FW_TYPE=$(fw_detect); break ;;
-                2) fw_install "firewalld"; echo ""; read -rp "  按 Enter 继续..." _; FW_TYPE=$(fw_detect); break ;;
+                1) fw_install "ufw";       echo ""; read -rp "  按 Enter 继续..." _ ;;
+                2) fw_install "firewalld"; echo ""; read -rp "  按 Enter 继续..." _ ;;
                 0) return ;;
                 00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1 ;;
             esac
-        done
-    fi
+            continue
+        fi
 
-    # 已安装：进入对应子菜单
-    case "$FW_TYPE" in
-        ufw)      ufw_menu ;;
-        firewalld) fwd_menu ;;
-    esac
+        # 已安装：进入对应子菜单（返回后重新检测）
+        case "$FW_TYPE" in
+            ufw)       ufw_menu ;;
+            firewalld) fwd_menu ;;
+        esac
+        # 子菜单返回（可能是卸载后返回），重新循环检测
+    done
 }
 
 # ── SSH 工具集子菜单 ──────────────────────────────────────
@@ -3130,20 +3184,21 @@ caddy_menu() {
         if [ "$C_ST" = "not_installed" ]; then
             echo -e "  服务状态: ${C_COLOR}${BOLD}未安装${NC}"
             echo ""
+            echo -e "  ${DIM}Caddy 是一个自动 HTTPS 的现代 Web 服务器，支持反向代理和静态托管${NC}"
+            echo ""
             echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
-            echo -e "  ${GREEN}1${NC}) 安装 Caddy"
+            echo -e "  ${GREEN}1${NC}) 立即安装 Caddy"
             echo -e "  ${RED}0${NC}) 返回"
             echo -e "  ${RED}00${NC}) 退出脚本"
             echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
             echo ""
             read -rp "  请选择 [0-1]: " CH
             case "$CH" in
-                1) caddy_install ;;
+                1) caddy_install; echo ""; read -rp "  按 Enter 继续..." _ ;;
                 0) return ;;
                 00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1 ;;
             esac
-            echo ""; read -rp "  按 Enter 继续..." _
             continue
         fi
 
