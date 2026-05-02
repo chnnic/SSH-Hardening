@@ -1116,6 +1116,7 @@ fail2ban_menu() {
         box_line "  4) 基础参数配置"     "  ${GREEN}4${NC}) 基础参数配置"
         box_line "  5) 编辑配置文件"     "  ${GREEN}5${NC}) 编辑配置文件"
         box_line "  6) 卸载 Fail2ban"    "  ${YELLOW}6${NC}) 卸载 Fail2ban"
+        box_line "  u) 安装/更新 Fail2ban" "  ${CYAN}u${NC}) 安装/更新 Fail2ban"
         if [ "$F2B_ST" = "running" ]; then
             box_line "  7) 停止服务"     "  ${YELLOW}7${NC}) 停止服务"
         else
@@ -1125,7 +1126,7 @@ fail2ban_menu() {
         box_line "  00) 退出脚本"        "  ${RED}00${NC}) 退出脚本"
         box_bot
         echo ""
-        read -rp "  请选择 [0-7]: " CHOICE
+        read -rp "  请选择 [0-7/u]: " CHOICE
 
         case "$CHOICE" in
             1) f2b_banned_list "$JAIL_NAME" ;;
@@ -1134,6 +1135,13 @@ fail2ban_menu() {
             4) f2b_config_params ;;
             5) f2b_edit_config ;;
             6) f2b_uninstall ;;
+            u|U)
+                print_header "安装/更新 Fail2ban"
+                info "正在更新 Fail2ban..."
+                pkg_install fail2ban
+                local NEW_VER; NEW_VER=$(fail2ban-client version 2>/dev/null | head -1)
+                info "当前版本：${NEW_VER:-未知} ✓"
+                ;;
             7)
                 if [ "$F2B_ST" = "running" ]; then
                     stop_fail2ban && info "Fail2ban 已停止" || error "停止失败"
@@ -2023,13 +2031,22 @@ ufw_menu() {
         echo -e "  ${GREEN}7${NC}) 删除 IP 规则"
         echo -e "  ${GREEN}8${NC}) 一键放行常用端口"
         echo -e "  ${YELLOW}9${NC}) 卸载 ufw"
+        echo -e "  ${CYAN}u${NC}) 安装/更新 ufw"
         echo -e "  ${RED}0${NC}) 返回"
         echo -e "  ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择 [0-9]: " CH
+        read -rp "  请选择 [0-9/u]: " CH
 
         case "$CH" in
+            u|U)
+                print_header "安装/更新 ufw"
+                info "正在更新 ufw..."
+                pkg_install ufw
+                local NEW_VER; NEW_VER=$(ufw version 2>/dev/null | head -1)
+                info "当前版本：${NEW_VER:-未知} ✓"
+                sleep 1; continue
+                ;;
             1)
                 if [ "$STATUS" = "active" ]; then
                     ufw --force disable && info "防火墙已关闭 ✓"
@@ -3376,6 +3393,7 @@ caddy_menu() {
             echo -e "  ${GREEN}9${NC}) 启动服务"
         fi
         echo -e "  ${YELLOW}d${NC}) 卸载 Caddy"
+        echo -e "  ${CYAN}u${NC}) 安装/更新 Caddy"
         echo -e "  ${RED}0${NC}) 返回"
         echo -e "  ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
@@ -3391,6 +3409,13 @@ caddy_menu() {
             6) caddy_view_logs ;;
             7) caddy_edit_raw ;;
             8) caddy_reload_config ;;
+            u|U)
+                print_header "安装/更新 Caddy"
+                info "正在更新 Caddy..."
+                caddy_install
+                local NEW_VER; NEW_VER=$(caddy version 2>/dev/null | awk '{print $1}')
+                info "当前版本：${NEW_VER:-未知} ✓"
+                ;;
             9)
                 if [ "$C_ST" = "running" ]; then
                     systemctl stop caddy 2>/dev/null || rc-service caddy stop 2>/dev/null
