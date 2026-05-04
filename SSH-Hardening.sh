@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V1.12 — 银趴火山帮
+#  VPS 开荒脚本 V1.15 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -70,7 +70,7 @@ print_header() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V1.12"
+    box_title "VPS 开荒脚本 V1.15"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -1086,7 +1086,7 @@ fail2ban_menu() {
         clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V1.12"
+        box_title "VPS 开荒脚本 V1.15"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -3709,6 +3709,224 @@ portfwd_menu() {
 }
 
 
+
+# ══════════════════════════════════════════════════════════
+#  时间同步模块
+# ══════════════════════════════════════════════════════════
+
+timesync_menu() {
+    while true; do
+        print_header "时间同步 / 时区设置"
+
+        # 当前状态
+        local CUR_TZ CUR_TIME CUR_DATE NTP_STATUS
+        CUR_TZ=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo "未知")
+        CUR_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+        CUR_DATE=$(date '+%Z %z')
+
+        # NTP 状态
+        if timedatectl show --property=NTPSynchronized --value 2>/dev/null | grep -q "yes"; then
+            NTP_STATUS="${GREEN}已同步${NC}"
+        elif command -v chronyc &>/dev/null && chronyc tracking 2>/dev/null | grep -q "Leap status.*Normal"; then
+            NTP_STATUS="${GREEN}已同步(chrony)${NC}"
+        else
+            NTP_STATUS="${YELLOW}未同步${NC}"
+        fi
+
+        echo -e "  当前时区：${BOLD}${CUR_TZ}${NC}"
+        echo -e "  当前时间：${BOLD}${CUR_TIME}${NC}  ${DIM}${CUR_DATE}${NC}"
+        echo -e "  NTP状态 ：${NTP_STATUS}"
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 强制同步时间（立即同步）"
+        echo -e "  ${GREEN}2${NC}) 设置为北京时区（Asia/Shanghai）"
+        echo -e "  ${GREEN}3${NC}) 同步时间 + 设置北京时区（一键）"
+        echo -e "  ${GREEN}4${NC}) 设置其他时区"
+        echo -e "  ${GREEN}5${NC}) 开启 NTP 自动同步"
+        echo -e "  ${RED}0${NC}) 返回"
+        echo -e "  ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo ""
+        read -rp "  请选择 [0-5]: " CH
+
+        case "$CH" in
+            1) ts_sync_time ;;
+            2) ts_set_beijing ;;
+            3) ts_set_beijing; ts_sync_time ;;
+            4) ts_set_custom_tz ;;
+            5) ts_enable_ntp ;;
+            0) return ;;
+            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+
+        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+    done
+}
+
+# ── 强制同步时间 ──────────────────────────────────────────
+ts_sync_time() {
+    print_header "强制同步系统时间"
+    echo -e "  ${DIM}尝试多种方式同步时间...${NC}"
+    echo ""
+
+    local SYNCED=false
+
+    # 方法1：timedatectl + systemd-timesyncd
+    if command -v timedatectl &>/dev/null && pidof systemd &>/dev/null; then
+        info "尝试 systemd-timesyncd..."
+        timedatectl set-ntp true 2>/dev/null
+        # 重启 timesyncd 强制立即同步
+        systemctl restart systemd-timesyncd 2>/dev/null
+        sleep 2
+        if timedatectl show --property=NTPSynchronized --value 2>/dev/null | grep -q "yes"; then
+            info "systemd-timesyncd 同步成功 ✓"
+            SYNCED=true
+        fi
+    fi
+
+    # 方法2：chrony
+    if [ "$SYNCED" = false ] && command -v chronyc &>/dev/null; then
+        info "尝试 chrony..."
+        systemctl restart chronyd 2>/dev/null || rc-service chronyd restart 2>/dev/null || true
+        sleep 1
+        chronyc makestep 2>/dev/null && info "chrony 强制同步成功 ✓" && SYNCED=true
+    fi
+
+    # 方法3：ntpdate（直连 NTP 服务器）
+    if [ "$SYNCED" = false ]; then
+        local NTP_SERVERS="ntp.aliyun.com time.cloudflare.com pool.ntp.org time.google.com"
+        if command -v ntpdate &>/dev/null; then
+            info "尝试 ntpdate..."
+            for srv in $NTP_SERVERS; do
+                if ntpdate -u "$srv" &>/dev/null; then
+                    info "ntpdate 同步成功（$srv）✓"
+                    SYNCED=true
+                    break
+                fi
+            done
+        else
+            # 安装 ntpdate 再同步
+            info "ntpdate 未安装，尝试安装..."
+            pkg_install ntpdate &>/dev/null
+            if command -v ntpdate &>/dev/null; then
+                for srv in $NTP_SERVERS; do
+                    if ntpdate -u "$srv" &>/dev/null; then
+                        info "ntpdate 同步成功（$srv）✓"
+                        SYNCED=true
+                        break
+                    fi
+                done
+            fi
+        fi
+    fi
+
+    # 方法4：date 命令从 HTTP 头获取时间（极端情况兜底）
+    if [ "$SYNCED" = false ]; then
+        info "尝试从 HTTP 头获取时间..."
+        local HTTP_DATE
+        HTTP_DATE=$(curl -sI --max-time 5 https://www.aliyun.com 2>/dev/null | grep -i "^date:" | cut -d' ' -f2- | tr -d '\r')
+        if [ -n "$HTTP_DATE" ]; then
+            date -s "$HTTP_DATE" &>/dev/null && info "HTTP 时间同步成功 ✓" && SYNCED=true
+        fi
+    fi
+
+    echo ""
+    if [ "$SYNCED" = true ]; then
+        info "当前时间：$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    else
+        error "自动同步失败，请检查网络连接"
+        echo -e "  ${DIM}手动同步：ntpdate ntp.aliyun.com${NC}"
+    fi
+}
+
+# ── 设置北京时区 ──────────────────────────────────────────
+ts_set_beijing() {
+    print_header "设置北京时区"
+    info "设置时区为 Asia/Shanghai（北京 UTC+8）..."
+
+    if command -v timedatectl &>/dev/null; then
+        timedatectl set-timezone Asia/Shanghai 2>/dev/null && info "时区已设置 ✓"
+    elif [ -f /usr/share/zoneinfo/Asia/Shanghai ]; then
+        ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+        echo "Asia/Shanghai" > /etc/timezone
+        info "时区已设置 ✓"
+    else
+        error "找不到时区文件，尝试安装 tzdata..."
+        pkg_install tzdata &>/dev/null
+        if [ -f /usr/share/zoneinfo/Asia/Shanghai ]; then
+            ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+            echo "Asia/Shanghai" > /etc/timezone
+            info "时区已设置 ✓"
+        else
+            error "设置失败，请手动执行：timedatectl set-timezone Asia/Shanghai"
+            return
+        fi
+    fi
+
+    echo ""
+    info "当前时间：$(date '+%Y-%m-%d %H:%M:%S %Z %z')"
+}
+
+# ── 设置自定义时区 ────────────────────────────────────────
+ts_set_custom_tz() {
+    print_header "设置自定义时区"
+    echo -e "  常用时区参考："
+    echo -e "  ${GREEN}Asia/Shanghai${NC}       北京 UTC+8"
+    echo -e "  ${GREEN}Asia/Tokyo${NC}          东京 UTC+9"
+    echo -e "  ${GREEN}America/New_York${NC}    纽约 UTC-5"
+    echo -e "  ${GREEN}America/Los_Angeles${NC} 洛杉矶 UTC-8"
+    echo -e "  ${GREEN}Europe/London${NC}       伦敦 UTC+0"
+    echo -e "  ${GREEN}Europe/Paris${NC}        巴黎 UTC+1"
+    echo ""
+    read -rp "  请输入时区名称（直接回车取消）: " TZ_INPUT
+    [ -z "$TZ_INPUT" ] && { warn "已取消"; return; }
+
+    if [ ! -f "/usr/share/zoneinfo/${TZ_INPUT}" ]; then
+        error "时区 '${TZ_INPUT}' 不存在，请检查拼写"
+        return
+    fi
+
+    if command -v timedatectl &>/dev/null; then
+        timedatectl set-timezone "$TZ_INPUT" 2>/dev/null && info "时区已设置为 ${TZ_INPUT} ✓"
+    else
+        ln -sf "/usr/share/zoneinfo/${TZ_INPUT}" /etc/localtime
+        echo "$TZ_INPUT" > /etc/timezone
+        info "时区已设置为 ${TZ_INPUT} ✓"
+    fi
+
+    echo ""
+    info "当前时间：$(date '+%Y-%m-%d %H:%M:%S %Z %z')"
+}
+
+# ── 开启 NTP 自动同步 ─────────────────────────────────────
+ts_enable_ntp() {
+    print_header "开启 NTP 自动同步"
+
+    if command -v timedatectl &>/dev/null && pidof systemd &>/dev/null; then
+        timedatectl set-ntp true 2>/dev/null
+        systemctl enable systemd-timesyncd --quiet 2>/dev/null
+        systemctl start  systemd-timesyncd 2>/dev/null
+        info "systemd-timesyncd NTP 自动同步已开启 ✓"
+    elif command -v chronyc &>/dev/null; then
+        svc_enable chronyd
+        systemctl start chronyd 2>/dev/null || rc-service chronyd start 2>/dev/null
+        info "chrony NTP 自动同步已开启 ✓"
+    else
+        info "安装 chrony..."
+        pkg_install chrony &>/dev/null
+        svc_enable chronyd
+        systemctl start chronyd 2>/dev/null || rc-service chronyd start 2>/dev/null
+        info "chrony 已安装并开启自动同步 ✓"
+    fi
+
+    echo ""
+    sleep 1
+    local SYNC_ST
+    SYNC_ST=$(timedatectl show --property=NTPSynchronized --value 2>/dev/null || echo "unknown")
+    [ "$SYNC_ST" = "yes" ] && info "NTP 状态：已同步 ✓" || warn "NTP 状态：同步中（可能需要几秒）"
+}
+
 # ══════════════════════════════════════════════════════════
 #  主菜单
 # ══════════════════════════════════════════════════════════
@@ -3724,7 +3942,7 @@ main_menu() {
         clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V1.12"
+        box_title "VPS 开荒脚本 V1.15"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
@@ -3759,6 +3977,10 @@ main_menu() {
         fi
         box_line "  防火墙: ${FW_STAT}" "  防火墙: ${FW_COLOR}${BOLD}${FW_STAT}${NC}"
         box_line "  Caddy: ${CADDY_LABEL}" "  Caddy: ${CADDY_COLOR}${BOLD}${CADDY_LABEL}${NC}"
+        local SYS_TIME SYS_TZ
+        SYS_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+        SYS_TZ=$(timedatectl show --property=Timezone --value 2>/dev/null || date '+%Z')
+        box_line "  时间: ${SYS_TIME}  ${SYS_TZ}" "  时间: ${BOLD}${SYS_TIME}${NC}  ${DIM}${SYS_TZ}${NC}"
         box_sep
         box_line "  1) SSH 工具集"   "  ${GREEN}1${NC}) SSH 工具集"
         box_line "  2) Fail2ban 管理" "  ${GREEN}2${NC}) Fail2ban 管理"
@@ -3769,10 +3991,11 @@ main_menu() {
         box_line "  7) IPv4/IPv6 配置" "  ${GREEN}7${NC}) IPv4/IPv6 配置"
         box_line "  8) Caddy 管理"    "  ${GREEN}8${NC}) Caddy 管理"
         box_line "  9) 端口转发"     "  ${GREEN}9${NC}) 端口转发"
+        box_line "  t) 时间同步"     "  ${GREEN}t${NC}) 时间同步"
         box_line "  0) 退出"         "  ${RED}0${NC}) 退出"
         box_bot
         echo ""
-        read -rp "  请选择功能 [0-9]: " CHOICE
+        read -rp "  请选择功能 [0-9/t]: " CHOICE
 
         case "$CHOICE" in
             1) ssh_tools_menu ;;
@@ -3784,6 +4007,7 @@ main_menu() {
             7) ip_config_menu ;;
             8) caddy_menu ;;
             9) portfwd_menu ;;
+            t|T) timesync_menu ;;
             0) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项，请重新输入。"; sleep 1 ;;
         esac
