@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  VPS 开荒脚本 V1.15 — 银趴火山帮
+#  VPS 开荒脚本 V1.16 — 银趴火山帮
 #  功能：SSH管理 / Fail2ban / BBR TCP 调优
 # ============================================================
 
@@ -70,7 +70,7 @@ print_header() {
     clear
     echo ""
     box_top
-    box_title "VPS 开荒脚本 V1.15"
+    box_title "VPS 开荒脚本 V1.16"
     box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
     box_sep
     box_title "$1"
@@ -710,20 +710,42 @@ f2b_install() {
     if pkg_install fail2ban; then
         # 创建基础 jail.local（如果不存在）
         if [ ! -f /etc/fail2ban/jail.local ]; then
-            # 检测日志后端：有 auth.log 用 auto，否则用 systemd
+            # 检测日志后端
             local BACKEND="auto"
             local HAS_AUTHLOG=false
             [ -f /var/log/auth.log ] && HAS_AUTHLOG=true
             [ -f /var/log/secure ]   && HAS_AUTHLOG=true
 
             if [ "$HAS_AUTHLOG" = false ]; then
-                BACKEND="systemd"
+                # 尝试用 systemd backend，需要 python3-systemd 模块
+                if python3 -c "import systemd.journal" &>/dev/null 2>&1; then
+                    BACKEND="systemd"
+                    info "检测到 python3-systemd，使用 systemd backend"
+                else
+                    # 尝试安装 python3-systemd
+                    info "尝试安装 python3-systemd 模块..."
+                    if pkg_install python3-systemd &>/dev/null 2>&1 && python3 -c "import systemd.journal" &>/dev/null 2>&1; then
+                        BACKEND="systemd"
+                        info "python3-systemd 安装成功，使用 systemd backend ✓"
+                    else
+                        # 回退到 auto，但需要有日志文件
+                        BACKEND="auto"
+                        warn "python3-systemd 不可用，使用 auto backend"
+                        # 确保 auth.log 存在（安装 rsyslog）
+                        if [ ! -f /var/log/auth.log ]; then
+                            info "安装 rsyslog 以生成 auth.log..."
+                            pkg_install rsyslog &>/dev/null 2>&1
+                            svc_enable rsyslog
+                            systemctl start rsyslog 2>/dev/null || rc-service rsyslog start 2>/dev/null || true
+                            sleep 1
+                        fi
+                    fi
+                fi
             fi
 
             # 检测 fail2ban 版本是否需要 allowipv6
             local F2B_VER; F2B_VER=$(fail2ban-client version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
             local NEED_ALLOWIPV6=false
-            # fail2ban >= 1.0 需要 allowipv6
             local F2B_MAJOR; F2B_MAJOR=$(echo "$F2B_VER" | cut -d. -f1)
             [ "${F2B_MAJOR:-0}" -ge 1 ] && NEED_ALLOWIPV6=true
 
@@ -796,19 +818,15 @@ JAILEOF
         if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
             systemctl unmask fail2ban 2>/dev/null || true
 
-            # 修复 Type=simple 导致 fork 后 systemd 误判崩溃的问题
-            # 某些发行版的 fail2ban.service 用 Type=simple，但 fail2ban-server 会 fork
-            local F2B_SVC_TYPE
-            F2B_SVC_TYPE=$(grep "^Type=" /lib/systemd/system/fail2ban.service 2>/dev/null | cut -d= -f2)
-            if [ "$F2B_SVC_TYPE" = "simple" ]; then
-                mkdir -p /etc/systemd/system/fail2ban.service.d/
-                cat > /etc/systemd/system/fail2ban.service.d/override.conf << 'SVCEOF'
+            # 强制写入 override：修复 Type=simple 导致 systemd 误判进程退出为崩溃的问题
+            # fail2ban-server 启动后 fork 到后台，主进程退出是正常的，需要 Type=forking
+            mkdir -p /etc/systemd/system/fail2ban.service.d/
+            cat > /etc/systemd/system/fail2ban.service.d/override.conf << 'SVCEOF'
 [Service]
 Type=forking
 PIDFile=/run/fail2ban/fail2ban.pid
 SVCEOF
-                info "已修复 fail2ban service Type（simple→forking）✓"
-            fi
+            info "已配置 fail2ban service Type=forking ✓"
 
             systemctl daemon-reload 2>/dev/null || true
             systemctl enable fail2ban 2>/dev/null || true
@@ -1111,7 +1129,7 @@ fail2ban_menu() {
         clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V1.15"
+        box_title "VPS 开荒脚本 V1.16"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         box_title "Fail2ban 管理"
@@ -3967,7 +3985,7 @@ main_menu() {
         clear
         echo ""
         box_top
-        box_title "VPS 开荒脚本 V1.15"
+        box_title "VPS 开荒脚本 V1.16"
         box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
         box_sep
         # 收集状态数据
