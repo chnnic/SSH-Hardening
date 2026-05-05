@@ -122,6 +122,16 @@ restart_fail2ban() {
 
 # 检测服务管理器并启动/停止 fail2ban
 start_fail2ban() {
+    # 确保 socket 目录存在（tmpfs 重启后会消失）
+    mkdir -p /var/run/fail2ban 2>/dev/null
+    chmod 755 /var/run/fail2ban 2>/dev/null
+
+    # 写入 tmpfiles.d 确保重启后自动创建目录
+    if command -v systemd-tmpfiles &>/dev/null; then
+        echo "d /var/run/fail2ban 0755 root root -" > /etc/tmpfiles.d/fail2ban.conf 2>/dev/null
+        systemd-tmpfiles --create /etc/tmpfiles.d/fail2ban.conf 2>/dev/null || true
+    fi
+
     # 优先尝试 systemctl，失败则回退 service / rc-service
     if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
         systemctl start fail2ban 2>/dev/null && return 0
@@ -785,6 +795,21 @@ JAILEOF
         # unmask + enable（处理 static unit 问题）
         if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
             systemctl unmask fail2ban 2>/dev/null || true
+
+            # 修复 Type=simple 导致 fork 后 systemd 误判崩溃的问题
+            # 某些发行版的 fail2ban.service 用 Type=simple，但 fail2ban-server 会 fork
+            local F2B_SVC_TYPE
+            F2B_SVC_TYPE=$(grep "^Type=" /lib/systemd/system/fail2ban.service 2>/dev/null | cut -d= -f2)
+            if [ "$F2B_SVC_TYPE" = "simple" ]; then
+                mkdir -p /etc/systemd/system/fail2ban.service.d/
+                cat > /etc/systemd/system/fail2ban.service.d/override.conf << 'SVCEOF'
+[Service]
+Type=forking
+PIDFile=/run/fail2ban/fail2ban.pid
+SVCEOF
+                info "已修复 fail2ban service Type（simple→forking）✓"
+            fi
+
             systemctl daemon-reload 2>/dev/null || true
             systemctl enable fail2ban 2>/dev/null || true
         fi
