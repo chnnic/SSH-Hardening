@@ -687,13 +687,24 @@ f2b_seconds_to_human() {
 
 
 # 检测 fail2ban 是否已安装并运行
+# fail2ban-client ping 兼容函数（自动探测 socket 路径）
+f2b_ping() {
+    local SOCK
+    for SOCK in /run/fail2ban/fail2ban.sock \
+                /var/run/fail2ban/fail2ban.sock \
+                /tmp/fail2ban.sock; do
+        [ -S "$SOCK" ] && fail2ban-client -s "$SOCK" ping &>/dev/null 2>&1 && return 0
+    done
+    fail2ban-client ping &>/dev/null 2>&1
+}
+
 f2b_status() {
     if ! command -v fail2ban-client &>/dev/null; then
         echo "not_installed"
         return
     fi
     # 先用 fail2ban-client ping 检测实际运行状态（最可靠）
-    if fail2ban-client ping &>/dev/null 2>&1; then
+    if f2b_ping; then
         echo "running"
     elif svc_is_active fail2ban 2>/dev/null; then
         echo "running"
@@ -705,157 +716,124 @@ f2b_status() {
 # 安装 fail2ban
 f2b_install() {
     print_header "安装 Fail2ban"
-    info "正在更新软件包列表..."
     info "正在安装 fail2ban..."
-    if pkg_install fail2ban; then
-        # 创建基础 jail.local（如果不存在）
-        if [ ! -f /etc/fail2ban/jail.local ]; then
-            # 检测日志后端
-            local BACKEND="auto"
-            local HAS_AUTHLOG=false
-            [ -f /var/log/auth.log ] && HAS_AUTHLOG=true
-            [ -f /var/log/secure ]   && HAS_AUTHLOG=true
+    if ! pkg_install fail2ban; then
+        error "安装失败，请检查网络或手动安装：apt install fail2ban"
+        return 1
+    fi
 
-            if [ "$HAS_AUTHLOG" = false ]; then
-                # 尝试用 systemd backend，需要 python3-systemd 模块
-                if python3 -c "import systemd.journal" &>/dev/null 2>&1; then
-                    BACKEND="systemd"
-                    info "检测到 python3-systemd，使用 systemd backend"
-                else
-                    # 尝试安装 python3-systemd
-                    info "尝试安装 python3-systemd 模块..."
-                    if pkg_install python3-systemd &>/dev/null 2>&1 && python3 -c "import systemd.journal" &>/dev/null 2>&1; then
-                        BACKEND="systemd"
-                        info "python3-systemd 安装成功，使用 systemd backend ✓"
-                    else
-                        # 回退到 auto，但需要有日志文件
-                        BACKEND="auto"
-                        warn "python3-systemd 不可用，使用 auto backend"
-                        # 确保 auth.log 存在（安装 rsyslog）
-                        if [ ! -f /var/log/auth.log ]; then
-                            info "安装 rsyslog 以生成 auth.log..."
-                            pkg_install rsyslog &>/dev/null 2>&1
-                            svc_enable rsyslog
-                            systemctl start rsyslog 2>/dev/null || rc-service rsyslog start 2>/dev/null || true
-                            sleep 1
-                        fi
-                    fi
-                fi
-            fi
+    # ── 1. 确定 backend ──────────────────────────────────────
+    local BACKEND="auto"
 
-            # 检测 fail2ban 版本是否需要 allowipv6
-            local F2B_VER; F2B_VER=$(fail2ban-client version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
-            local NEED_ALLOWIPV6=false
-            local F2B_MAJOR; F2B_MAJOR=$(echo "$F2B_VER" | cut -d. -f1)
-            [ "${F2B_MAJOR:-0}" -ge 1 ] && NEED_ALLOWIPV6=true
-
-            if [ "$BACKEND" = "systemd" ]; then
-                # systemd backend 不需要 logpath
-                if [ "$NEED_ALLOWIPV6" = true ]; then
-                    cat > /etc/fail2ban/jail.local << 'JAILEOF'
-[DEFAULT]
-bantime  = 3600
-findtime = 600
-maxretry = 5
-backend  = systemd
-allowipv6 = auto
-
-[sshd]
-enabled  = true
-port     = ssh
-JAILEOF
-                else
-                    cat > /etc/fail2ban/jail.local << 'JAILEOF'
-[DEFAULT]
-bantime  = 3600
-findtime = 600
-maxretry = 5
-backend  = systemd
-
-[sshd]
-enabled  = true
-port     = ssh
-JAILEOF
-                fi
-            else
-                # auto backend 保留 logpath
-                if [ "$NEED_ALLOWIPV6" = true ]; then
-                    cat > /etc/fail2ban/jail.local << 'JAILEOF'
-[DEFAULT]
-bantime  = 3600
-findtime = 600
-maxretry = 5
-backend  = auto
-allowipv6 = auto
-
-[sshd]
-enabled  = true
-port     = ssh
-logpath  = %(sshd_log)s
-JAILEOF
-                else
-                    cat > /etc/fail2ban/jail.local << 'JAILEOF'
-[DEFAULT]
-bantime  = 3600
-findtime = 600
-maxretry = 5
-backend  = auto
-
-[sshd]
-enabled  = true
-port     = ssh
-logpath  = %(sshd_log)s
-JAILEOF
-                fi
-            fi
-            info "已创建配置 /etc/fail2ban/jail.local（backend=${BACKEND}）"
-        fi
-        # 先停止可能正在运行的旧实例，清理 socket
-        systemctl stop fail2ban 2>/dev/null || true
-        rm -f /var/run/fail2ban/fail2ban.sock 2>/dev/null || true
-
-        # unmask + enable（处理 static unit 问题）
-        if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
-            systemctl unmask fail2ban 2>/dev/null || true
-
-            # 强制写入 override：修复 Type=simple 导致 systemd 误判进程退出为崩溃的问题
-            # fail2ban-server 启动后 fork 到后台，主进程退出是正常的，需要 Type=forking
-            mkdir -p /etc/systemd/system/fail2ban.service.d/
-            cat > /etc/systemd/system/fail2ban.service.d/override.conf << 'SVCEOF'
-[Service]
-Type=forking
-PIDFile=/run/fail2ban/fail2ban.pid
-SVCEOF
-            info "已配置 fail2ban service Type=forking ✓"
-
-            systemctl daemon-reload 2>/dev/null || true
-            systemctl enable fail2ban 2>/dev/null || true
-        fi
-
-        # 验证配置正确再启动
-        info "验证 fail2ban 配置..."
-        if fail2ban-server -t &>/dev/null 2>&1; then
-            info "配置验证通过，正在启动..."
-            start_fail2ban
-            sleep 2
-            if fail2ban-client ping &>/dev/null 2>&1; then
-                info "Fail2ban 安装并启动成功 ✓"
-            else
-                error "启动失败，请查看日志：journalctl -u fail2ban -n 20"
-            fi
+    # 检测 python3-systemd 是否可用
+    if python3 -c "import systemd.journal" &>/dev/null 2>&1; then
+        BACKEND="systemd"
+        info "检测到 python3-systemd，使用 systemd backend ✓"
+    else
+        # 尝试安装 python3-systemd
+        info "尝试安装 python3-systemd..."
+        if pkg_install python3-systemd &>/dev/null 2>&1 \
+            && python3 -c "import systemd.journal" &>/dev/null 2>&1; then
+            BACKEND="systemd"
+            info "python3-systemd 安装成功，使用 systemd backend ✓"
         else
-            # 配置有问题，显示具体错误
-            error "配置验证失败，错误信息："
-            fail2ban-server -t 2>&1 | while IFS= read -r l; do
-                echo -e "  ${RED}$l${NC}"
-            done
+            warn "python3-systemd 不可用，使用 auto backend"
+            # 没有 auth.log 则安装 rsyslog 补充
+            if [ ! -f /var/log/auth.log ] && [ ! -f /var/log/secure ]; then
+                info "安装 rsyslog 以生成 auth.log..."
+                pkg_install rsyslog &>/dev/null 2>&1
+                svc_enable rsyslog
+                systemctl start rsyslog 2>/dev/null \
+                    || rc-service rsyslog start 2>/dev/null || true
+                sleep 1
+            fi
+        fi
+    fi
+
+    # ── 2. 检测版本，决定是否加 allowipv6 ────────────────────
+    local F2B_MAJOR
+    F2B_MAJOR=$(fail2ban-client version 2>/dev/null \
+        | grep -oE '[0-9]+' | head -1)
+    local ALLOW_IPV6_LINE=""
+    [ "${F2B_MAJOR:-0}" -ge 1 ] && ALLOW_IPV6_LINE="allowipv6 = auto"
+
+    # ── 3. 写入 jail.local ───────────────────────────────────
+    if [ ! -f /etc/fail2ban/jail.local ]; then
+        local LOGPATH_LINE=""
+        [ "$BACKEND" = "auto" ] && LOGPATH_LINE="logpath  = %(sshd_log)s"
+
+        mkdir -p /etc/fail2ban
+        {
+            echo "[DEFAULT]"
+            echo "bantime  = 3600"
+            echo "findtime = 600"
+            echo "maxretry = 5"
+            echo "backend  = ${BACKEND}"
+            [ -n "$ALLOW_IPV6_LINE" ] && echo "$ALLOW_IPV6_LINE"
             echo ""
-            warn "请进入「基础参数配置」或「编辑配置文件」修复后再启动"
+            echo "[sshd]"
+            echo "enabled  = true"
+            echo "port     = ssh"
+            [ -n "$LOGPATH_LINE" ] && echo "$LOGPATH_LINE"
+        } > /etc/fail2ban/jail.local
+        info "已创建 jail.local（backend=${BACKEND}）✓"
+    fi
+
+    # ── 4. 清理残留，准备启动 ────────────────────────────────
+    # 清理旧 socket
+    rm -f /run/fail2ban/fail2ban.sock \
+          /var/run/fail2ban/fail2ban.sock 2>/dev/null || true
+
+    # 清理可能残留的错误 override
+    rm -f /etc/systemd/system/fail2ban.service.d/override.conf 2>/dev/null
+    rmdir /etc/systemd/system/fail2ban.service.d/ 2>/dev/null || true
+
+    # unmask + enable
+    if command -v systemctl &>/dev/null && pidof systemd &>/dev/null; then
+        systemctl unmask fail2ban 2>/dev/null || true
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl enable fail2ban 2>/dev/null || true
+    fi
+
+    # ── 5. 验证配置再启动 ────────────────────────────────────
+    info "验证 fail2ban 配置..."
+    local TEST_OUT
+    TEST_OUT=$(fail2ban-server -t 2>&1)
+    if echo "$TEST_OUT" | grep -qiE "^OK|test is successful"; then
+        info "配置验证通过，正在启动..."
+        start_fail2ban
+        # 等待 socket 出现（最多 8 秒）
+        local i=0
+        while [ $i -lt 8 ]; do
+            f2b_ping && break
+            sleep 1
+            i=$((i+1))
+        done
+        if f2b_ping; then
+            info "Fail2ban 安装并启动成功 ✓"
+        else
+            # 最后尝试：直接前台启动后台化
+            warn "标准启动未响应，尝试备用方式..."
+            /usr/bin/fail2ban-server -xf start &>/dev/null &
+            sleep 3
+            if f2b_ping; then
+                info "Fail2ban 启动成功 ✓"
+            else
+                error "启动失败，请手动执行："
+                echo -e "  ${DIM}journalctl -u fail2ban -n 20${NC}"
+                echo -e "  ${DIM}fail2ban-server -xf --logtarget=sysout start${NC}"
+            fi
         fi
     else
-        error "安装失败，请检查网络或手动安装：apt install fail2ban"
+        error "配置验证失败："
+        echo "$TEST_OUT" | grep -v "^OK" | while IFS= read -r l; do
+            echo -e "  ${RED}$l${NC}"
+        done
+        echo ""
+        warn "请进入「基础参数配置」修复后再启动"
     fi
 }
+
 
 # ── 基础参数配置 ──────────────────────────────────────────
 f2b_config_params() {
@@ -1191,7 +1169,7 @@ fail2ban_menu() {
                 else
                     start_fail2ban
                     sleep 2
-                    if fail2ban-client ping &>/dev/null 2>&1; then
+                    if f2b_ping; then
                         info "Fail2ban 已启动 ✓"
                     else
                         error "启动失败，请检查：journalctl -u fail2ban -n 20"
