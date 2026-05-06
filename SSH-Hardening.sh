@@ -4362,6 +4362,76 @@ self_update() {
 }
 
 # ── 脚本管理菜单 ──────────────────────────────────────────
+# ── 删除本地脚本和快捷键 ─────────────────────────────────
+self_uninstall() {
+    print_header "删除本地脚本和快捷键"
+    warn "将删除以下内容："
+    echo -e "  ${DIM}${LOCAL_SCRIPT}${NC}"
+    echo -e "  ${DIM}/usr/local/bin/v${NC}"
+    echo -e "  ${DIM}/usr/local/bin/V${NC}"
+    echo -e "  ${DIM}各 shell 配置文件中的 alias v=...${NC}"
+    echo ""
+    read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
+    [ -z "$CONFIRM" ] && CONFIRM="y"
+    if ! echo "$CONFIRM" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+
+    # 删除本地脚本
+    rm -f "$LOCAL_SCRIPT" && info "已删除 ${LOCAL_SCRIPT} ✓"
+
+    # 删除系统命令
+    rm -f /usr/local/bin/v /usr/local/bin/V && info "已删除系统命令 v/V ✓"
+
+    # 清理 shell 配置文件中的 alias
+    for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
+        [ -f "$RC" ] || continue
+        if grep -q "alias v=" "$RC" 2>/dev/null; then
+            grep -v "alias v=\|alias V=\|VPS 开荒脚本快捷键" "$RC" > "${RC}.tmp"                 && mv "${RC}.tmp" "$RC"
+            info "已清理 ${RC} ✓"
+        fi
+    done
+
+    echo ""
+    info "清理完成，快捷键 v 已移除"
+    warn "当前会话仍可使用 alias，重新登录后完全生效"
+    echo ""
+    read -rp "  按 Enter 返回..." _
+    return
+}
+
+# ── 首次运行检测是否已安装快捷键 ─────────────────────────
+self_check_first_run() {
+    # 已安装则跳过
+    [ -f /usr/local/bin/v ] && return
+    [ -f "$LOCAL_SCRIPT" ] && return
+
+    clear
+    echo ""
+    box_top
+    box_title "VPS 开荒脚本 V1.18"
+    box_line "  ··银趴火山帮··" "  ${DIM}··银趴火山帮··${NC}"
+    box_sep
+    box_title "首次运行检测"
+    box_bot
+    echo ""
+    echo -e "  ${YELLOW}检测到脚本未安装到本地${NC}"
+    echo -e "  安装后可随时输入 ${BOLD}v${NC} 快速启动"
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo -e "  ${GREEN}1${NC}) 立即安装（推荐）"
+    echo -e "  ${GREEN}0${NC}) 跳过，直接进入"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    echo ""
+    read -rp "  请选择 [0-1]: " CH
+    case "$CH" in
+        1)
+            self_install
+            echo ""
+            read -rp "  按 Enter 继续进入主菜单..." _
+            ;;
+        *) ;;
+    esac
+}
+
 self_manage_menu() {
     while true; do
         print_header "脚本管理"
@@ -4386,21 +4456,23 @@ self_manage_menu() {
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo -e "  ${GREEN}1${NC}) 安装脚本 + 设置快捷键 v"
         echo -e "  ${GREEN}2${NC}) 强制从 GitHub 更新到最新版"
+        echo -e "  ${YELLOW}3${NC}) 删除本地脚本和快捷键"
         echo -e "  ${RED}0${NC}) 返回"
         echo -e "  ${RED}00${NC}) 退出脚本"
         echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
         echo ""
-        read -rp "  请选择 [0-2]: " CH
+        read -rp "  请选择 [0-3]: " CH
 
         case "$CH" in
             1) self_install ;;
             2) self_update ;;
+            3) self_uninstall ;;
             0) return ;;
             00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
         esac
 
-        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+        [ "${CH}" != "0" ] && [ "${CH}" != "3" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
     done
 }
 
@@ -4498,4 +4570,5 @@ main_menu() {
     done
 }
 
+self_check_first_run
 main_menu
