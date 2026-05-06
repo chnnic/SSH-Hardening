@@ -4220,6 +4220,154 @@ swap_menu() {
 }
 
 
+
+# ══════════════════════════════════════════════════════════
+#  脚本自我管理模块
+# ══════════════════════════════════════════════════════════
+
+SCRIPT_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/main/SSH-Hardening.sh"
+LOCAL_SCRIPT="/usr/local/bin/vps-tools"
+
+# ── 安装脚本到本地（设置快捷键 v）────────────────────────
+self_install() {
+    print_header "安装脚本到本地"
+    echo -e "  将脚本安装到 ${BOLD}${LOCAL_SCRIPT}${NC}"
+    echo -e "  安装后输入 ${GREEN}v${NC} 或 ${GREEN}V${NC} 即可快速呼出"
+    echo ""
+
+    # 优先复制当前运行的脚本
+    local SELF; SELF=$(readlink -f "${0}" 2>/dev/null || echo "${0}")
+
+    if [ -f "$SELF" ] && [ "$SELF" != "$LOCAL_SCRIPT" ]; then
+        cp "$SELF" "$LOCAL_SCRIPT"
+    elif [ -f /tmp/ssh_hardening.sh ]; then
+        cp /tmp/ssh_hardening.sh "$LOCAL_SCRIPT"
+    else
+        info "本地缓存不存在，从 GitHub 下载..."
+        if ! curl -fsSL "$SCRIPT_URL" -o "$LOCAL_SCRIPT" 2>/dev/null; then
+            error "下载失败，请检查网络"; return 1
+        fi
+    fi
+
+    chmod +x "$LOCAL_SCRIPT"
+    info "脚本已安装到 ${LOCAL_SCRIPT} ✓"
+
+    # 创建系统级命令 v / V（最可靠，无需 source）
+    ln -sf "$LOCAL_SCRIPT" /usr/local/bin/v 2>/dev/null && info "系统命令 v 已创建 ✓"
+    ln -sf "$LOCAL_SCRIPT" /usr/local/bin/V 2>/dev/null && info "系统命令 V 已创建 ✓"
+
+    # 写入 alias 到 shell 配置（增强兼容性）
+    local WROTE_ALIAS=false
+    for RC in /root/.bashrc /root/.bash_profile ~/.bashrc ~/.bash_profile ~/.zshrc; do
+        [ -f "$RC" ] || continue
+        if ! grep -q "alias v=" "$RC" 2>/dev/null; then
+            {
+                echo ""
+                echo "# VPS 开荒脚本快捷键"
+                echo "alias v='${LOCAL_SCRIPT}'"
+                echo "alias V='${LOCAL_SCRIPT}'"
+            } >> "$RC"
+            info "alias 已写入 ${RC} ✓"
+            WROTE_ALIAS=true
+        fi
+    done
+
+    echo ""
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+    info "安装完成！新终端直接输入 ${BOLD}v${NC} 即可启动"
+    echo -e "  ${DIM}当前终端可执行：source ~/.bashrc${NC}"
+    echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+}
+
+# ── 强制从 GitHub 更新脚本 ────────────────────────────────
+self_update() {
+    print_header "强制更新脚本"
+    echo -e "  ${DIM}${SCRIPT_URL}${NC}"
+    echo ""
+
+    local TMP_FILE; TMP_FILE=$(mktemp /tmp/vps_update_XXXXXX.sh)
+
+    info "正在下载最新版本..."
+    if ! curl -fsSL "$SCRIPT_URL" -o "$TMP_FILE" 2>/dev/null; then
+        rm -f "$TMP_FILE"
+        error "下载失败，请检查网络连接"
+        echo -e "  ${DIM}手动更新：curl -fsSL ${SCRIPT_URL} -o ${LOCAL_SCRIPT} && chmod +x ${LOCAL_SCRIPT}${NC}"
+        return
+    fi
+
+    # 验证语法
+    if ! bash -n "$TMP_FILE" 2>/dev/null; then
+        rm -f "$TMP_FILE"
+        error "下载的文件语法有误，已取消更新"
+        return
+    fi
+
+    # 版本对比
+    local NEW_VER; NEW_VER=$(grep -oE 'V[0-9]+\.[0-9]+' "$TMP_FILE" | head -1)
+    local CUR_VER; CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+' "${LOCAL_SCRIPT}" 2>/dev/null | head -1)
+    echo -e "  当前版本：${BOLD}${CUR_VER:-未知}${NC}  →  最新版本：${GREEN}${BOLD}${NEW_VER:-未知}${NC}"
+    echo ""
+
+    # 覆盖安装
+    cp "$TMP_FILE" "$LOCAL_SCRIPT"
+    chmod +x "$LOCAL_SCRIPT"
+    cp "$TMP_FILE" /tmp/ssh_hardening.sh 2>/dev/null
+    rm -f "$TMP_FILE"
+
+    # 确保 v 命令还在
+    ln -sf "$LOCAL_SCRIPT" /usr/local/bin/v 2>/dev/null
+    ln -sf "$LOCAL_SCRIPT" /usr/local/bin/V 2>/dev/null
+
+    info "更新完成 ✓"
+    warn "即将用新版本重启脚本..."
+    sleep 1
+    exec "$LOCAL_SCRIPT"
+}
+
+# ── 脚本管理菜单 ──────────────────────────────────────────
+self_manage_menu() {
+    while true; do
+        print_header "脚本管理"
+
+        local IS_INSTALLED=false
+        local CUR_VER=""
+        if [ -f "$LOCAL_SCRIPT" ]; then
+            IS_INSTALLED=true
+            CUR_VER=$(grep -oE 'V[0-9]+\.[0-9]+' "$LOCAL_SCRIPT" | head -1)
+        fi
+        local HAS_CMD=false
+        [ -f /usr/local/bin/v ] && HAS_CMD=true
+
+        echo -e "  本地路径：${BOLD}${LOCAL_SCRIPT}${NC}"
+        if [ "$IS_INSTALLED" = true ]; then
+            echo -e "  状  态  ：${GREEN}${BOLD}已安装${NC}  版本：${BOLD}${CUR_VER:-未知}${NC}"
+        else
+            echo -e "  状  态  ：${YELLOW}${BOLD}未安装${NC}"
+        fi
+        echo -e "  快捷键 v：${BOLD}$([ "$HAS_CMD" = true ] && echo "${GREEN}已设置${NC}" || echo "${YELLOW}未设置${NC}")${NC}"
+        echo ""
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo -e "  ${GREEN}1${NC}) 安装脚本 + 设置快捷键 v"
+        echo -e "  ${GREEN}2${NC}) 强制从 GitHub 更新到最新版"
+        echo -e "  ${RED}0${NC}) 返回"
+        echo -e "  ${RED}00${NC}) 退出脚本"
+        echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 38))${NC}"
+        echo ""
+        read -rp "  请选择 [0-2]: " CH
+
+        case "$CH" in
+            1) self_install ;;
+            2) self_update ;;
+            0) return ;;
+            00) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; sleep 1; continue ;;
+        esac
+
+        [ "${CH}" != "0" ] && { echo ""; read -rp "  按 Enter 返回..." _; }
+    done
+}
+
+
 # ══════════════════════════════════════════════════════════
 #  主菜单
 # ══════════════════════════════════════════════════════════
@@ -4286,10 +4434,11 @@ main_menu() {
         box_line "  9) 端口转发"     "  ${GREEN}9${NC}) 端口转发"
         box_line "  t) 时间同步"     "  ${GREEN}t${NC}) 时间同步"
         box_line "  s) Swap 管理"    "  ${GREEN}s${NC}) Swap 管理"
+        box_line "  m) 脚本管理"     "  ${GREEN}m${NC}) 脚本管理（安装/更新）"
         box_line "  0) 退出"         "  ${RED}0${NC}) 退出"
         box_bot
         echo ""
-        read -rp "  请选择功能 [0-9/t/s]: " CHOICE
+        read -rp "  请选择功能 [0-9/t/s/m]: " CHOICE
 
         case "$CHOICE" in
             1) ssh_tools_menu ;;
@@ -4303,6 +4452,7 @@ main_menu() {
             9) portfwd_menu ;;
             t|T) timesync_menu ;;
             s|S) swap_menu ;;
+            m|M) self_manage_menu ;;
             0) clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项，请重新输入。"; sleep 1 ;;
         esac
