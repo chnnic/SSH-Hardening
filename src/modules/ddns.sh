@@ -643,7 +643,8 @@ ddns_cf_cleanup_cross_record() {
     while IFS=$'\t' read -r record_id content; do
         [ -n "$record_id" ] && echo -e "  ${DIM}${type} ${domain} → ${content:-空值}  ID: ${record_id}${NC}"
     done <<< "$exact_records"
-    read -rp "  是否删除上述交叉记录？(y/N，默认N): " choice
+    read -rp "  是否删除上述交叉记录？(Y/n，默认Y): " choice
+    [ -z "$choice" ] && choice="y"
     echo "$choice" | grep -qiE '^y(es)?$' || { warn "已保留上述记录"; return 0; }
 
     while IFS=$'\t' read -r record_id content; do
@@ -1042,7 +1043,10 @@ ddns_install_cloudflare() {
     if [ "$DDNS_ENABLE_A" = "true" ] && [ "$DDNS_ENABLE_AAAA" = "true" ]; then
         [ "$DDNS_DOMAIN4" = "$DDNS_DOMAIN6" ] \
             && echo -e "  记录方式 : ${BOLD}共用域名（同一域名各 1 条 A / AAAA）${NC}" \
-            || echo -e "  记录方式 : ${BOLD}独立域名（IPv4 / IPv6 各 1 条）${NC}"
+            || {
+                echo -e "  记录方式 : ${BOLD}独立域名（IPv4 / IPv6 各 1 条）${NC}"
+                echo -e "  交叉清理 : ${BOLD}默认删除 IPv4 域名上的 AAAA 与 IPv6 域名上的 A（输入 n 保留）${NC}"
+            }
     fi
     echo -e "  代理   : ${BOLD}$([ "$DDNS_PROXIED" = "true" ] && echo '开启' || echo '关闭')${NC}"
     echo -e "  TTL    : ${BOLD}${DDNS_TTL}${NC}"

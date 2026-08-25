@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.12.1
+# VPS 开荒脚本 V3.12.2
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -19,24 +19,24 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 适合不能访问 GitHub 的中国内地 VPS。先在一台可以访问 GitHub 的电脑或跳板机下载：
 
 ```bash
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.1/vps-tools-offline-V3.12.1.tar.gz
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.1/vps-tools-offline-V3.12.1.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.12.1.tar.gz.sha256
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.2/vps-tools-offline-V3.12.2.tar.gz
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.2/vps-tools-offline-V3.12.2.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.12.2.tar.gz.sha256
 ```
 
 再通过 `scp`、SFTP 或 WinSCP 将两个文件传到 VPS。Linux/macOS 示例：
 
 ```bash
-scp vps-tools-offline-V3.12.1.tar.gz* root@你的VPS地址:/root/
+scp vps-tools-offline-V3.12.2.tar.gz* root@你的VPS地址:/root/
 ```
 
 登录 VPS 后离线安装：
 
 ```bash
 cd /root
-sha256sum -c vps-tools-offline-V3.12.1.tar.gz.sha256
-tar -xzf vps-tools-offline-V3.12.1.tar.gz
-cd vps-tools-offline-V3.12.1
+sha256sum -c vps-tools-offline-V3.12.2.tar.gz.sha256
+tar -xzf vps-tools-offline-V3.12.2.tar.gz
+cd vps-tools-offline-V3.12.2
 bash install.sh
 v
 ```
@@ -661,6 +661,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.12.2** | 修复 Cloudflare 双栈 DDNS 使用独立 A / AAAA 域名时旧交叉类型记录残留：配置时默认删除 IPv4 域名上的 AAAA 与 IPv6 域名上的 A，输入 `n` 可保留；补充故障注入测试 |
 | **V3.12.1** | 修复首页 BBR 状态误判：当本工具管理的 HTB + FQ 限速拓扑已经存在时，按实际 `class` / `maxrate` 显示“已生效”，不再显示“已保存，未生效”；进入首页时自动恢复确实丢失的已保存规则，并补充对应冒烟测试 |
 | **V3.12.0** | IPv4/IPv6 模块新增同网卡多 IP 出口切换：分别列出默认网卡上的稳定 IPv4、IPv6 地址并标记当前出口源地址，通过默认路由 `src` 切换；应用后验证内核选源及绑定地址的 HTTPS 出口，失败立即恢复原路由，成功后保留 180 秒防断联回滚；拒绝多默认路由和 ECMP，不修改发行版持久网络配置 |
 | **V3.11.9** | 修复双栈 DDNS 手动更新只显示最后一条 IPv6 日志、容易误判 IPv4 未执行的问题：现在分别展示本次 IPv4 A 与 IPv6 AAAA 结果；执行前校验 `/root/ddns.sh` 与当前配置的开关和域名，旧版或损坏脚本缺少 IPv4 域名时停止并提示重新生成，定时脚本也拒绝静默跳过启用的记录 |
