@@ -162,7 +162,7 @@ BANNER_COMPACT=$(COLUMNS=60 NO_COLOR=1 volcano_art_banner)
 
 for fn in bbr_preflight bbr_runtime_snapshot bbr_ensure_baseline bbr_restore_runtime_snapshot bbr_baseline_value bbr_config_has_key bbr_config_value \
     bbr_apply_sysctl bbr_generate_config bbr_physical_memory_mb bbr_effective_memory_mb bbr_buffer_cap_bytes bbr_conntrack_max_for_memory bbr_bdp_mb bbr_buffer_target_mb bbr_recommend_profile \
-    bbr_tc_qdisc_safe_to_replace bbr_tc_current_rate bbr_tc_saved_values bbr_tc_saved_rate_display bbr_tc_rate_display \
+    bbr_tc_qdisc_safe_to_replace bbr_tc_current_rate bbr_tc_owned_rate bbr_tc_saved_values bbr_tc_saved_rate_display bbr_tc_rate_display \
     bbr_tc_topology_matches bbr_tc_managed_artifact bbr_tc_is_legacy_owned bbr_tc_persistence_current bbr_tc_reconcile_saved \
     bbr_tc_snapshot_foreign bbr_tc_force_confirm bbr_tc_remove_confirm bbr_tc_apply_runtime bbr_default_route_info bbr_route_token \
     bbr_route_strip_cwnd bbr_apply_initcwnd_route volcano_tcp_profile; do
@@ -198,6 +198,24 @@ unset -f sysctl
     bbr_ensure_baseline
     [[ "$(bbr_baseline_value net.ipv4.ip_forward)" = 0 ]] || { echo "BBR baseline overwrote an existing value" >&2; exit 1; }
     [[ "$(bbr_baseline_value net.ipv6.conf.eth0.accept_ra)" = 1 ]] || { echo "BBR baseline did not capture a newly managed interface" >&2; exit 1; }
+)
+(
+    TC_STATE_FILE="$TMP/active-tc.state"
+    TC_BIN="$TMP/active-tc"
+    printf 'DEV=eth0\nRATE=1100\nBURST_KB=1100\nFORCE=0\n' > "$TC_STATE_FILE"
+    cat > "$TC_BIN" <<'EOF'
+#!/bin/sh
+if [ "$1 $2" = "qdisc show" ]; then
+    printf '%s\n' \
+        'qdisc htb 1: root refcnt 3 r2q 10 default 0x10 direct_packets_stat 0 direct_qlen 1000' \
+        'qdisc fq 100: parent 1:10 limit 10000p flow_limit 100p buckets 1024 maxrate 1100Mbit low_rate_threshold 550Kbit'
+elif [ "$1 $2" = "class show" ]; then
+    echo 'class htb 1:10 root prio 0 rate 1100Mbit ceil 1100Mbit burst 1126400b cburst 1126400b'
+fi
+EOF
+    chmod +x "$TC_BIN"
+    [[ "$(bbr_tc_rate_display eth0 "$TC_BIN")" = "1100Mbit" ]] \
+        || { echo "BBR active owned qdisc was shown as saved or inactive" >&2; exit 1; }
 )
 
 (

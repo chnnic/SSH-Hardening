@@ -98,6 +98,7 @@ main_menu() {
             FW_STAT="${FW_TYPE} 已停止"; FW_STATE="inactive"
         fi
         local BBR_CC; BBR_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
+        [ ! -s "$TC_STATE_FILE" ] || bbr_tc_reconcile_saved >/dev/null 2>&1 || true
         local TC_RATE TC_DEV TC_BIN
         TC_DEV=$(default_iface)
         TC_BIN=$(command -v tc 2>/dev/null || echo /sbin/tc)

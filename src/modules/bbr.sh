@@ -506,6 +506,25 @@ bbr_tc_current_rate() {
     printf '%s\n' "$RATE"
 }
 
+bbr_tc_owned_rate() {
+    local DEV="$1" TC_BIN="$2" RATE QDISCS CLASSES
+    CLASSES=$("$TC_BIN" class show dev "$DEV" 2>/dev/null || true)
+    RATE=$(printf '%s\n' "$CLASSES" | awk '
+        $1 == "class" && $2 == "htb" && $3 == "1:10" {
+            for (i = 1; i < NF; i++) if ($i == "rate") { print $(i + 1); exit }
+        }
+    ')
+    if [ -z "$RATE" ]; then
+        QDISCS=$("$TC_BIN" qdisc show dev "$DEV" 2>/dev/null || true)
+        RATE=$(printf '%s\n' "$QDISCS" | awk '
+            $1 == "qdisc" && $2 == "fq" && $3 == "100:" {
+                for (i = 1; i < NF; i++) if ($i == "maxrate") { print $(i + 1); exit }
+            }
+        ')
+    fi
+    printf '%s\n' "$RATE"
+}
+
 bbr_tc_saved_values() {
     local DEV RATE BURST_KB FORCE
     DEV=$(bbr_state_value "$TC_STATE_FILE" DEV 2>/dev/null || true)
@@ -535,6 +554,21 @@ bbr_tc_saved_rate_display() {
 
 bbr_tc_rate_display() {
     local DEV="$1" TC_BIN="$2" RATE QDISCS LINE TYPE SAVED_RATE
+    if bbr_tc_is_owned "$DEV" "$TC_BIN"; then
+        RATE=$(bbr_tc_owned_rate "$DEV" "$TC_BIN")
+        if [ -n "$RATE" ]; then
+            printf '%s\n' "$RATE"
+        else
+            SAVED_RATE=$(bbr_tc_saved_rate_display "$DEV" 2>/dev/null || true)
+            if [ -n "$SAVED_RATE" ]; then
+                SAVED_RATE=${SAVED_RATE%%（*}
+                printf '%s（已生效，速率读取异常）\n' "$SAVED_RATE"
+            else
+                printf '已生效（速率读取异常）\n'
+            fi
+        fi
+        return
+    fi
     RATE=$(bbr_tc_current_rate "$DEV" "$TC_BIN")
     if [ -z "$RATE" ]; then
         SAVED_RATE=$(bbr_tc_saved_rate_display "$DEV" 2>/dev/null || true)
