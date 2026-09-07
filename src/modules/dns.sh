@@ -28,6 +28,54 @@ dns_detect_network() {
     echo "${HAS_V4}:${HAS_V6}"
 }
 
+dns_expected_nameservers() {
+    local V4_LIST="$1" V6_LIST="$2" HAS_V6="$3"
+    printf '%s\n' $V4_LIST
+    [ "$HAS_V6" = "true" ] && [ -n "$V6_LIST" ] && printf '%s\n' $V6_LIST
+}
+
+dns_resolv_nameservers_match() {
+    local RESOLV="$1" V4_LIST="$2" V6_LIST="$3" HAS_V6="$4" ACTUAL EXPECTED
+    [ -r "$RESOLV" ] || return 1
+    ACTUAL=$(awk '/^[[:space:]]*nameserver[[:space:]]+/ { print $2 }' "$RESOLV" 2>/dev/null)
+    EXPECTED=$(dns_expected_nameservers "$V4_LIST" "$V6_LIST" "$HAS_V6")
+    [ "$ACTUAL" = "$EXPECTED" ]
+}
+
+dns_resolvconf_configure() {
+    local V4_LIST="$1" V6_LIST="$2" HAS_V6="$3"
+    local CONF="${DNS_RESOLVCONF_CONFIG:-/etc/resolvconf.conf}" TMP ALL_DNS
+    ALL_DNS="$V4_LIST"
+    [ "$HAS_V6" = "true" ] && [ -n "$V6_LIST" ] && ALL_DNS="$ALL_DNS $V6_LIST"
+    TMP=$(mktemp "${CONF}.vps-tools.XXXXXX") || return 1
+    if [ -f "$CONF" ]; then
+        awk '
+            $0 == "# BEGIN VPS TOOLS DNS" { skip=1; next }
+            $0 == "# END VPS TOOLS DNS" { skip=0; next }
+            !skip { print }
+        ' "$CONF" > "$TMP" || { rm -f "$TMP"; return 1; }
+    fi
+    {
+        [ ! -s "$TMP" ] || printf '\n'
+        printf '%s\n' '# BEGIN VPS TOOLS DNS'
+        # Remove all interface/DHCP nameservers before adding the selected list.
+        printf '%s\n' 'replace="${replace:-} nameserver/*/"'
+        printf 'name_servers="%s"\n' "$ALL_DNS"
+        printf '%s\n' '# END VPS TOOLS DNS'
+    } >> "$TMP" || { rm -f "$TMP"; return 1; }
+    chmod 644 "$TMP" 2>/dev/null || true
+    mv "$TMP" "$CONF" || { rm -f "$TMP"; return 1; }
+}
+
+dns_resolvconf_apply() {
+    local RESOLV="$1" V4_LIST="$2" V6_LIST="$3" HAS_V6="$4"
+    local RESOLVCONF_BIN="${DNS_RESOLVCONF_BIN:-resolvconf}"
+    command -v "$RESOLVCONF_BIN" >/dev/null 2>&1 || return 1
+    dns_resolvconf_configure "$V4_LIST" "$V6_LIST" "$HAS_V6" || return 1
+    "$RESOLVCONF_BIN" -u || return 1
+    dns_resolv_nameservers_match "$RESOLV" "$V4_LIST" "$V6_LIST" "$HAS_V6"
+}
+
 dns_write() {
     local V4_LIST="$1"
     local V6_LIST="$2"
@@ -60,17 +108,26 @@ dns_write() {
             if [ "$HAS_V6" = true ] && [ -n "$V6_LIST" ]; then
                 nmcli connection modify "$CON" ipv6.ignore-auto-dns yes ipv6.dns "$V6_LIST" 2>/dev/null \
                     || { error "NetworkManager IPv6 DNS 写入失败：$CON"; return 1; }
+            else
+                nmcli connection modify "$CON" ipv6.ignore-auto-dns yes ipv6.dns "" 2>/dev/null \
+                    || { error "NetworkManager IPv6 自动 DNS 清理失败：$CON"; return 1; }
             fi
         done < <(nmcli -g NAME connection show --active 2>/dev/null)
         [ "$NM_COUNT" -gt 0 ] || { error "NetworkManager 没有活动连接"; return 1; }
         nmcli device reapply "$(default_iface)" 2>/dev/null || svc_restart NetworkManager \
             || { error "NetworkManager DNS 应用失败"; return 1; }
     elif command -v resolvconf >/dev/null 2>&1; then
-        BACKEND="resolvconf"
-        mkdir -p /etc/resolvconf/resolv.conf.d
-        : > /etc/resolvconf/resolv.conf.d/head
-        for ip in $ALL_DNS; do echo "nameserver $ip" >> /etc/resolvconf/resolv.conf.d/head; done
-        resolvconf -u || { error "resolvconf 更新失败"; return 1; }
+        if resolvconf --version 2>/dev/null | grep -qi openresolv || [ -f /etc/resolvconf.conf ]; then
+            BACKEND="openresolv"
+            dns_resolvconf_apply "$RESOLV" "$V4_LIST" "$V6_LIST" "$HAS_V6" \
+                || { error "openresolv DNS 覆盖失败"; return 1; }
+        else
+            BACKEND="resolvconf exclusive"
+            dns_expected_nameservers "$V4_LIST" "$V6_LIST" "$HAS_V6" \
+                | sed 's/^/nameserver /' \
+                | resolvconf -a vps-tools -x \
+                || { error "resolvconf 独占 DNS 覆盖失败"; return 1; }
+        fi
     else
         chattr -i "$RESOLV" 2>/dev/null || true
         cp -a "$RESOLV" "${RESOLV}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
@@ -83,6 +140,13 @@ dns_write() {
             error "无法写入 $RESOLV"
             return 1
         fi
+    fi
+
+    if { [ "$BACKEND" = "openresolv" ] || [ "$BACKEND" = "resolvconf exclusive" ]; } \
+        && ! dns_resolv_nameservers_match "$RESOLV" "$V4_LIST" "$V6_LIST" "$HAS_V6"; then
+        error "DNS 后端未按目标覆盖，实际配置未改变"
+        audit_action "DNS更新失败，后端 $BACKEND 未覆盖旧 nameserver" FAILED
+        return 1
     fi
 
     local DNS_OK=false

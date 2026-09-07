@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.12.2
+# VPS 开荒脚本 V3.12.3
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -19,24 +19,24 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 适合不能访问 GitHub 的中国内地 VPS。先在一台可以访问 GitHub 的电脑或跳板机下载：
 
 ```bash
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.2/vps-tools-offline-V3.12.2.tar.gz
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.2/vps-tools-offline-V3.12.2.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.12.2.tar.gz.sha256
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.3/vps-tools-offline-V3.12.3.tar.gz
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.3/vps-tools-offline-V3.12.3.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.12.3.tar.gz.sha256
 ```
 
 再通过 `scp`、SFTP 或 WinSCP 将两个文件传到 VPS。Linux/macOS 示例：
 
 ```bash
-scp vps-tools-offline-V3.12.2.tar.gz* root@你的VPS地址:/root/
+scp vps-tools-offline-V3.12.3.tar.gz* root@你的VPS地址:/root/
 ```
 
 登录 VPS 后离线安装：
 
 ```bash
 cd /root
-sha256sum -c vps-tools-offline-V3.12.2.tar.gz.sha256
-tar -xzf vps-tools-offline-V3.12.2.tar.gz
-cd vps-tools-offline-V3.12.2
+sha256sum -c vps-tools-offline-V3.12.3.tar.gz.sha256
+tar -xzf vps-tools-offline-V3.12.3.tar.gz
+cd vps-tools-offline-V3.12.3
 bash install.sh
 v
 ```
@@ -496,7 +496,7 @@ SSH、防火墙、DNS、IP 优先级及 IPv6 修改会启动 180 秒防断联保
 
 高风险配置修改会先显示变更计划或逐行差异；配置备份默认保留最近 20 份，可通过环境变量 `VPS_BACKUP_KEEP` 调整。
 
-DNS 设置会自动识别 `systemd-resolved`、NetworkManager、resolvconf 或静态 `/etc/resolv.conf`，使用对应后端持久化配置。
+DNS 设置会自动识别 `systemd-resolved`、NetworkManager、openresolv/resolvconf 或静态 `/etc/resolv.conf`，使用对应后端覆盖并持久化配置；openresolv 会移除 DHCP/网卡自动 DNS，再写入所选 DNS，避免旧服务器地址被继续追加。
 
 ### g. 监控告警中心
 
@@ -661,6 +661,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.12.3** | 修复 DNS 优化在 openresolv 上只写入 `head` 导致旧 DHCP/网卡 DNS 继续存在的问题：现在使用持久化覆盖配置，重载网络或重启后仍保持所选 DNS，并校验实际 `/etc/resolv.conf` |
 | **V3.12.2** | 修复 Cloudflare 双栈 DDNS 使用独立 A / AAAA 域名时旧交叉类型记录残留：配置时默认删除 IPv4 域名上的 AAAA 与 IPv6 域名上的 A，输入 `n` 可保留；补充故障注入测试 |
 | **V3.12.1** | 修复首页 BBR 状态误判：当本工具管理的 HTB + FQ 限速拓扑已经存在时，按实际 `class` / `maxrate` 显示“已生效”，不再显示“已保存，未生效”；进入首页时自动恢复确实丢失的已保存规则，并补充对应冒烟测试 |
 | **V3.12.0** | IPv4/IPv6 模块新增同网卡多 IP 出口切换：分别列出默认网卡上的稳定 IPv4、IPv6 地址并标记当前出口源地址，通过默认路由 `src` 切换；应用后验证内核选源及绑定地址的 HTTPS 出口，失败立即恢复原路由，成功后保留 180 秒防断联回滚；拒绝多默认路由和 ECMP，不修改发行版持久网络配置 |

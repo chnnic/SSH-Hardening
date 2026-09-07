@@ -9,7 +9,7 @@ config_backup_allowed_roots() {
         etc/ssh/sshd_config etc/ssh/sshd_config.d root/.ssh/authorized_keys \
         etc/fail2ban etc/ufw etc/firewalld etc/nftables.conf etc/nftables.d/vps-tools-nftpf.nft etc/nft-port-forward \
         etc/sysctl.conf etc/sysctl.d/99-vps-bbr.conf etc/sysctl.d/99-ipv6-disable.conf \
-        etc/gai.conf etc/resolv.conf etc/systemd/resolved.conf etc/systemd/resolved.conf.d \
+        etc/gai.conf etc/resolv.conf etc/resolvconf.conf etc/systemd/resolved.conf etc/systemd/resolved.conf.d \
         etc/NetworkManager/conf.d etc/NetworkManager/system-connections etc/resolvconf/resolv.conf.d \
         etc/caddy root/ddns.sh root/.cf_token root/.hw_dns_aksk root/.cf_zone root/.cf_tg root/.cf_last_change \
         root/.cf_last_change_A root/.cf_last_change_AAAA root/.cf_last_status_A root/.cf_last_status_AAAA \
@@ -2881,6 +2881,7 @@ tar -tzf '$SNAP' 2>/dev/null | grep -qx 'etc/sysctl.d/99-ipv6-disable.conf' || r
 sshd -t >/dev/null 2>&1 && (systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || service sshd restart 2>/dev/null)
 systemctl restart systemd-resolved >/dev/null 2>&1 || true
 systemctl restart NetworkManager >/dev/null 2>&1 || true
+command -v resolvconf >/dev/null 2>&1 && resolvconf -u >/dev/null 2>&1 || true
 if command -v ufw >/dev/null 2>&1; then
     if [ '$UFW_STATE' = active ]; then ufw --force enable >/dev/null 2>&1; else ufw --force disable >/dev/null 2>&1; fi
 fi
