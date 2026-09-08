@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.12.4
+# VPS 开荒脚本 V3.12.5
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -19,24 +19,24 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 适合不能访问 GitHub 的中国内地 VPS。先在一台可以访问 GitHub 的电脑或跳板机下载：
 
 ```bash
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.4/vps-tools-offline-V3.12.4.tar.gz
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.4/vps-tools-offline-V3.12.4.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.12.4.tar.gz.sha256
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.5/vps-tools-offline-V3.12.5.tar.gz
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.5/vps-tools-offline-V3.12.5.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.12.5.tar.gz.sha256
 ```
 
 再通过 `scp`、SFTP 或 WinSCP 将两个文件传到 VPS。Linux/macOS 示例：
 
 ```bash
-scp vps-tools-offline-V3.12.4.tar.gz* root@你的VPS地址:/root/
+scp vps-tools-offline-V3.12.5.tar.gz* root@你的VPS地址:/root/
 ```
 
 登录 VPS 后离线安装：
 
 ```bash
 cd /root
-sha256sum -c vps-tools-offline-V3.12.4.tar.gz.sha256
-tar -xzf vps-tools-offline-V3.12.4.tar.gz
-cd vps-tools-offline-V3.12.4
+sha256sum -c vps-tools-offline-V3.12.5.tar.gz.sha256
+tar -xzf vps-tools-offline-V3.12.5.tar.gz
+cd vps-tools-offline-V3.12.5
 bash install.sh
 v
 ```
@@ -533,6 +533,10 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、openresolv/resol
 
 **一键 DD / 系统重装：**
 
+界面同时显示中文和英文。该功能会重启 VPS 并进入临时安装环境；看到 `Reinstalling...`、BusyBox 或 `~ #` 时，表示官方安装器仍在工作，不是新系统的正常 Shell。后续日志由 `bin456789/reinstall` 官方工具生成，可能只显示英文；如果安装器停在 `~ #`，可通过服务商控制台或 `tail -fn+1 /var/log/syslog` 排查。
+
+The reinstall screen is bilingual. It reboots the VPS into a temporary installer environment, so `Reinstalling...`, BusyBox, or `~ #` does not mean the new system is ready. Subsequent output comes from the official `bin456789/reinstall` tool and may be English-only; if the installer stops at `~ #`, use the provider console or `tail -fn+1 /var/log/syslog` for diagnostics.
+
 - 支持 Debian 12/13、Ubuntu 22.04/24.04、Alpine 3.20/3.22、Rocky Linux 9
 - 支持自定义 RAW/VHD 镜像直链
 - 使用 [`bin456789/reinstall`](https://github.com/bin456789/reinstall) 官方工具，下载后先执行 Bash 语法检查并显示计算出的 SHA256，便于审计
@@ -661,6 +665,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.12.5** | 一键 DD / 系统重装界面增加中英文双语菜单、风险提示、确认提示、认证说明和临时安装环境说明；补充 BusyBox / `~ #` 状态解释 |
 | **V3.12.4** | 修复 Debian 12 同时运行 systemd-resolved 与 resolvconf 时后端误判：仅在 `/etc/resolv.conf` 真正链接到 systemd-resolved 时使用该后端，否则使用 openresolv 覆盖模式；避免全局 DNS 写入成功但实际解析文件仍保留旧 DNS |
 | **V3.12.3** | 修复 DNS 优化在 openresolv 上只写入 `head` 导致旧 DHCP/网卡 DNS 继续存在的问题：现在使用持久化覆盖配置，重载网络或重启后仍保持所选 DNS，并校验实际 `/etc/resolv.conf` |
 | **V3.12.2** | 修复 Cloudflare 双栈 DDNS 使用独立 A / AAAA 域名时旧交叉类型记录残留：配置时默认删除 IPv4 域名上的 AAAA 与 IPv6 域名上的 A，输入 `n` 可保留；补充故障注入测试 |

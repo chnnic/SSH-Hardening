@@ -791,9 +791,13 @@ done
 grep -q -- '--bbr-reconcile-tc)' "$ROOT/src/modules/main.sh" \
     || { echo "Missing internal tc reconciliation CLI dispatch" >&2; exit 1; }
 
-for fn in common_software_menu system_reinstall_menu software_reinstall_menu software_group_packages; do
+for fn in common_software_menu system_reinstall_menu software_reinstall_menu software_group_packages reinstall_menu_item reinstall_bilingual_info reinstall_bilingual_warn reinstall_bilingual_error reinstall_bilingual_hint reinstall_bilingual_header; do
     declare -F "$fn" >/dev/null || { echo "Missing function: $fn" >&2; exit 1; }
 done
+grep -qF 'One-click DD / System Reinstall' "$ROOT/src/modules/software-reinstall.sh" \
+    || { echo "Missing bilingual reinstall title" >&2; exit 1; }
+grep -qF 'ERASE-ALL-DATA' "$ROOT/src/modules/software-reinstall.sh" \
+    || { echo "Missing reinstall confirmation token" >&2; exit 1; }
 
 for fn in config_export_archive config_import_archive config_transfer_menu rollback_center_menu; do
     declare -F "$fn" >/dev/null || { echo "Missing toolbox function: $fn" >&2; exit 1; }
