@@ -388,7 +388,8 @@ ENABLE_A=true
 ENABLE_AAAA=true
 EOF
     bash() {
-        touch -d '1 second ago' "$RUN_MARK"
+        # Fixed past timestamp keeps this mtime fixture portable across GNU/BSD/BusyBox.
+        touch -t 200001010000 "$RUN_MARK"
         printf '2026-08-02 12:00:00|A|v4.example.com|unchanged|198.51.100.10|198.51.100.10\n' > "$DDNS_STATE_DIR/.cf_last_status_A"
         printf '2026-08-02 12:00:01|AAAA|v6.example.com|updated|2001:4860::1|2001:4860::2\n' > "$DDNS_STATE_DIR/.cf_last_status_AAAA"
     }

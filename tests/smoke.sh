@@ -45,7 +45,9 @@ grep -Fqx 'resolv_conf_passthrough=/dev/null' "$DNS_RESOLVCONF_CONFIG" \
     PATH="$TMP/bin:$PATH"
     ! dns_systemd_resolved_linked "$DNS_RESOLV_LINK" \
         || { echo "systemd-resolved incorrectly selected a regular resolv.conf" >&2; exit 1; }
-    ln -s /run/systemd/resolve/stub-resolv.conf "$DNS_RESOLV_LINK"
+    mkdir -p "$TMP/run/systemd/resolve"
+    touch "$TMP/run/systemd/resolve/stub-resolv.conf"
+    ln -s "$TMP/run/systemd/resolve/stub-resolv.conf" "$DNS_RESOLV_LINK"
     dns_systemd_resolved_linked "$DNS_RESOLV_LINK" \
         || { echo "systemd-resolved symlink backend was not detected" >&2; exit 1; }
 )
@@ -375,39 +377,7 @@ EOF
     done
 )
 
-(
-    SYSCTL_FILE="$TMP/bbr-retired-sysctl.conf"
-    BBR_BASELINE_FILE="$TMP/bbr-retired-baseline.conf"
-    RETIRED_LOG="$TMP/bbr-retired-restore.log"
-    cat > "$SYSCTL_FILE" <<'EOF'
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-vm.min_free_kbytes = 262144
-net.ipv4.tcp_tw_reuse = 1
-EOF
-    cat > "$BBR_BASELINE_FILE" <<'EOF'
-vm.min_free_kbytes = 32768
-net.ipv4.tcp_tw_reuse = 2
-EOF
-    ensure_sysctl() { :; }
-    bbr_ensure_baseline() { :; }
-    bbr_runtime_snapshot() { printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\n' > "$1"; }
-    sysctl() {
-        case "${1:-} ${2:-}" in
-            '-n net.ipv4.tcp_congestion_control') echo bbr ;;
-            '-n net.core.default_qdisc') echo fq ;;
-            '-w vm.min_free_kbytes=32768'|'-w net.ipv4.tcp_tw_reuse=2') printf '%s\n' "$2" >> "$RETIRED_LOG" ;;
-            *) return 0 ;;
-        esac
-    }
-    CONFIG=$(bbr_generate_config 12582912 12582912 131072 10 default 0)
-    bbr_apply_sysctl "$CONFIG" baseline >/dev/null
-    grep -qx 'vm.min_free_kbytes=32768' "$RETIRED_LOG" || { echo "BBR did not restore retired min_free_kbytes" >&2; exit 1; }
-    grep -qx 'net.ipv4.tcp_tw_reuse=2' "$RETIRED_LOG" || { echo "BBR did not restore retired tcp_tw_reuse" >&2; exit 1; }
-    ! grep -qE '^(vm\.min_free_kbytes|net\.ipv4\.tcp_tw_reuse)[[:space:]]*=' "$SYSCTL_FILE" \
-        || { echo "BBR persisted retired settings after upgrade" >&2; exit 1; }
-)
-
+# Retired-parameter restoration is covered by the stateful bbr-enhancements fixture.
 bbr_tc_qdisc_safe_to_replace fq || { echo "BBR rejected a safe default qdisc" >&2; exit 1; }
 ! bbr_tc_qdisc_safe_to_replace cake || { echo "BBR would overwrite a foreign CAKE qdisc" >&2; exit 1; }
 (

@@ -146,6 +146,19 @@ BBR_FAIL_WRITE='net.ipv4.tcp_ecn_fallback=1'
 cmp -s "$SYSCTL_FILE" "$TEST_CASE/original.conf" || fail 'failed pair persisted'
 [ ! -d "${SYSCTL_FILE}.lock" ] || fail 'failed transaction leaked lock'
 
+fixture retired_cleanup
+mkdir -p "$BBR_PROC_SYS/vm"
+printf '262144\n' > "$BBR_PROC_SYS/vm/min_free_kbytes"
+printf '1\n' > "$BBR_PROC_SYS/net/ipv4/tcp_tw_reuse"
+printf 'vm.min_free_kbytes = 262144\nnet.ipv4.tcp_tw_reuse = 1\n' >> "$SYSCTL_FILE"
+printf 'vm.min_free_kbytes = 32768\nnet.ipv4.tcp_tw_reuse = 2\n' > "$BBR_BASELINE_FILE"
+CONFIG=$(bbr_generate_config 8192 8192 4096 10 balanced 0)
+bbr_apply_sysctl "$CONFIG" baseline >/dev/null || fail 'retired parameter migration'
+[ "$(sysctl -n vm.min_free_kbytes)" = 32768 ] || fail 'retired min_free_kbytes not restored'
+[ "$(sysctl -n net.ipv4.tcp_tw_reuse)" = 2 ] || fail 'retired tcp_tw_reuse not restored'
+! bbr_config_has_key "$(cat "$SYSCTL_FILE")" vm.min_free_kbytes || fail 'retired memory value persisted'
+! bbr_config_has_key "$(cat "$SYSCTL_FILE")" net.ipv4.tcp_tw_reuse || fail 'retired TCP value persisted'
+
 fixture noncore_readback
 BBR_IGNORE_WRITE='net.core.wmem_max=8192'
 CONFIG=$'net.core.rmem_max = 8192\nnet.core.wmem_max = 8192'

@@ -20,8 +20,8 @@ BBR_SYSCTL_MAIN="/etc/sysctl.conf"
 
 bbr_default_ipv6_iface() {
     local DEV
-    DEV=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
-    [ -n "$DEV" ] || DEV=$(ip -6 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    DEV=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' || true)
+    [ -n "$DEV" ] || DEV=$(ip -6 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' || true)
     echo "$DEV" | grep -qE '^[[:alnum:]_.-]{1,15}$' || DEV=""
     printf '%s\n' "$DEV"
 }
@@ -42,7 +42,7 @@ bbr_scene_keys() {
         net.ipv4.tcp_max_tw_buckets \
         net.ipv6.conf.default.accept_ra \
         fs.file-max
-    [ -n "$IPV6_IFACE" ] && printf 'net.ipv6.conf.%s.accept_ra\n' "$IPV6_IFACE"
+    if [ -n "$IPV6_IFACE" ]; then printf 'net.ipv6.conf.%s.accept_ra\n' "$IPV6_IFACE"; fi
 }
 
 bbr_retired_keys() {
