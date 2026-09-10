@@ -13,13 +13,16 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Check shell syntax
-        run: bash -n SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh
+        run: |
+          for file in SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/bbr-enhancements.sh; do
+            bash -n "$file"
+          done
 
       - name: Verify generated release
         run: ./build.sh --check
 
       - name: Run ShellCheck
-        run: shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh
+        run: shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/bbr-enhancements.sh
 
       - name: Verify release checksum
         run: sha256sum -c SSH-Hardening.sh.sha256

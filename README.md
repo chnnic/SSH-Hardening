@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.12.5
+# VPS 开荒脚本 V3.12.6
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -16,27 +16,27 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 ### 离线安装包
 
-适合不能访问 GitHub 的中国内地 VPS。先在一台可以访问 GitHub 的电脑或跳板机下载：
+适合不能访问 GitHub 的中国内地 VPS。以下使用已发布的 V3.12.4 离线包；V3.12.6 可通过本节末尾的构建命令从最新源码生成。先在一台可以访问 GitHub 的电脑或跳板机下载：
 
 ```bash
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.5/vps-tools-offline-V3.12.5.tar.gz
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.5/vps-tools-offline-V3.12.5.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.12.5.tar.gz.sha256
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.4/vps-tools-offline-V3.12.4.tar.gz
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.4/vps-tools-offline-V3.12.4.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.12.4.tar.gz.sha256
 ```
 
 再通过 `scp`、SFTP 或 WinSCP 将两个文件传到 VPS。Linux/macOS 示例：
 
 ```bash
-scp vps-tools-offline-V3.12.5.tar.gz* root@你的VPS地址:/root/
+scp vps-tools-offline-V3.12.4.tar.gz* root@你的VPS地址:/root/
 ```
 
 登录 VPS 后离线安装：
 
 ```bash
 cd /root
-sha256sum -c vps-tools-offline-V3.12.5.tar.gz.sha256
-tar -xzf vps-tools-offline-V3.12.5.tar.gz
-cd vps-tools-offline-V3.12.5
+sha256sum -c vps-tools-offline-V3.12.4.tar.gz.sha256
+tar -xzf vps-tools-offline-V3.12.4.tar.gz
+cd vps-tools-offline-V3.12.4
 bash install.sh
 v
 ```
@@ -215,7 +215,22 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 - 首次调优保存运行参数基线，每次应用保存运行快照；失败时自动回滚
 - 切换预设时检测上一场景遗留的转发/conntrack 参数，并恢复到首次调优前基线（`ip_forward` 单独警告）
 - 中转/落地场景默认不修改内核转发；仅在用户确认路由/NAT 用途后启用，并同时设置默认与当前出口 `accept_ra=2`
-- 逐行 `sysctl -w` 应用；非核心参数不支持时注释跳过，BBR 与 `fq` 写入失败或回读不一致都会回滚
+- 所有待应用参数逐项写入、回读并在提交前整体复核；支持的参数写入失败、值不一致或持久化失败时回滚本次修改
+- 内核不存在的非核心参数注释跳过；明确选择的 TCP 增强参数以及 BBR/`fq` 不允许静默跳过。权限不足与不支持分别报告
+- 同一配置文件通过事务锁防止同时写入，INT/TERM/HUP 中断触发回滚；回滚失败时保留快照并明确报错。强制终止/断电不保证自动恢复
+
+**TCP 增强（BBR 菜单 → `9`）：**
+- TFO、ECN + fallback、MTU 黑洞探测分别提供启用、关闭、恢复首次基线并退出管理
+- TFO 和 MTU 延续原有默认值 `3` / `1`；ECN 默认保留系统策略。ECN 启用时同时设置 `tcp_ecn=1`、`tcp_ecn_fallback=1`，缺少任一参数则整次取消
+- 独立开关只修改所选参数；增强偏好与 sysctl 写在同一文件，切换自动/手动/场景预设后仍然保留
+- 恢复原值后写入退出管理标记，后续预设不会重新启用该项；旧安装若缺少真实基线则拒绝猜测原值
+- 界面显示当前值、保存值和首次基线。TFO 仍需要应用配合；MTU=1 在检测到黑洞后探测；ECN 不保证所有链路都提速
+
+**诊断（BBR 菜单 → `8`）：**
+- 同时查看默认 qdisc 和 `tc -s qdisc` 显示的实际网卡队列；现代内核在其他队列下可使用 TCP 内部 pacing
+- 比较已保存与运行参数；按文件名优先级过滤被屏蔽的 sysctl 文件，列出重复/不同值的来源及行号（包括简单通配符线索），不修改其他配置
+- 显示 TCP 重传、SYN 重传、超时、监听队列溢出及 softnet 丢包/预算耗尽累计计数。计数不是本次调优的增量，也不能单凭累计值归因于 BBR
+- 诊断只读，sysctl 写权限采用文件权限检查，实际写入是否获准仍由内核/容器决定
 
 **其他功能：**
 - tc 限速（200M / 500M / 780M / 1G / 2G / 自定义）：`htb` 聚合整形 + `fq` 叶子保留 BBR pacing；兼容不可直接删除的默认 `mq`；默认拒绝外部 QoS，输入精确确认词后可接管或删除 `tbf` / CAKE / HTB 等 root qdisc，操作前诊断快照保存到 `/var/lib/vps-tools/tc-backups/`
@@ -665,6 +680,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.12.6** | 新增 TFO / ECN + fallback / MTU 独立增强设置，保留跨预设偏好及恢复原值；扩展全部参数回读、失败与中断回滚；诊断实际队列、配置漂移/来源及 TCP/softnet 累计计数 |
 | **V3.12.5** | 一键 DD / 系统重装界面增加中英文双语菜单、风险提示、确认提示、认证说明和临时安装环境说明；补充 BusyBox / `~ #` 状态解释 |
 | **V3.12.4** | 修复 Debian 12 同时运行 systemd-resolved 与 resolvconf 时后端误判：仅在 `/etc/resolv.conf` 真正链接到 systemd-resolved 时使用该后端，否则使用 openresolv 覆盖模式；避免全局 DNS 写入成功但实际解析文件仍保留旧 DNS |
 | **V3.12.3** | 修复 DNS 优化在 openresolv 上只写入 `head` 导致旧 DHCP/网卡 DNS 继续存在的问题：现在使用持久化覆盖配置，重载网络或重启后仍保持所选 DNS，并校验实际 `/etc/resolv.conf` |
