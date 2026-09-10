@@ -23,7 +23,7 @@ jobs:
             setup: apk add --no-cache bash python3
           - image: rockylinux:9
             pm: dnf
-            setup: dnf install -y bash python3
+            setup: dnf install -y bash python3 diffutils
     steps:
       - name: Checkout
         uses: actions/checkout@v5
