@@ -110,6 +110,62 @@ forwarding_fixture() {
     printf 'present\n' > "$TEST_CASE/ra-route"
 }
 
+fixture tcp_status
+while IFS='=' read -r KEY VALUE; do
+    printf '%s\n' "$VALUE" > "$(bbr_sysctl_path "$KEY")"
+    printf '%s = %s\n' "$KEY" "$VALUE" >> "$SYSCTL_FILE"
+done <<'EOF'
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_ecn=1
+net.ipv4.tcp_ecn_fallback=1
+net.ipv4.tcp_mtu_probing=1
+EOF
+printf 'net.ipv4.tcp_fastopen = 1\nnet.ipv4.tcp_mtu_probing = 0\n' > "$BBR_BASELINE_FILE"
+cp "$SYSCTL_FILE" "$TEST_CASE/display-before.conf"
+cp "$BBR_BASELINE_FILE" "$TEST_CASE/display-before.baseline"
+OUTPUT=$(bbr_tcp_status)
+[[ "$OUTPUT" = *'当前: 3（已开启：客户端 + 服务端）'* ]] || fail 'TFO enabled status missing'
+[[ "$OUTPUT" = *'当前: 1（已开启：入站 + 出站 ECN）'* ]] || fail 'ECN enabled status missing'
+[[ "$OUTPUT" = *'当前: 1（已开启：ECN 异常时允许回退）'* ]] || fail 'ECN fallback status missing'
+[[ "$OUTPUT" = *'当前: 1（已开启按需模式：检测到黑洞后探测）'* ]] || fail 'MTU on-demand mode shown as disabled'
+[[ "$OUTPUT" = *'已保存: 3 · 首次基线: 1'* ]] || fail 'saved/baseline values lost'
+[ "$(printf '%s\n' "$OUTPUT" | grep -c '推荐:')" = 4 ] || fail 'recommendations missing'
+[[ "$OUTPUT" = *'推荐: 3（客户端 + 服务端；需应用支持）'* ]] || fail 'TFO recommendation missing'
+[[ "$OUTPUT" = *'推荐: 1（主动启用增强时；配合 fallback=1）'* ]] || fail 'ECN recommendation lost compatibility context'
+[[ "$OUTPUT" = *'推荐: 1（允许异常回退；ECN 关闭时不生效）'* ]] || fail 'fallback recommendation missing'
+[[ "$OUTPUT" = *'推荐: 1（按需探测，非始终探测）'* ]] || fail 'MTU recommendation missing'
+[ "$(bbr_tcp_value_description net.ipv4.tcp_fastopen 1)" = '仅客户端开启' ] || fail 'TFO client-only state'
+[ "$(bbr_tcp_value_description net.ipv4.tcp_fastopen 2)" = '仅服务端开启' ] || fail 'TFO server-only state'
+[ "$(bbr_tcp_value_description net.ipv4.tcp_ecn 2)" = '仅入站 ECN；出站不主动启用' ] || fail 'passive ECN state'
+[ "$(bbr_tcp_value_description net.ipv4.tcp_mtu_probing 2)" = '始终探测' ] || fail 'MTU always-on state'
+[[ "$(bbr_tcp_value_description net.ipv4.tcp_ecn 3)" = *AccECN* ]] || fail 'AccECN state'
+[[ "$(bbr_tcp_value_description net.ipv4.tcp_ecn 4)" = *'出站 ECN'* ]] || fail 'mixed ECN state'
+[[ "$(bbr_tcp_value_description net.ipv4.tcp_ecn 5)" = *'出站不主动启用'* ]] || fail 'passive AccECN state'
+for GROUP in TFO ECN MTU; do
+    for KEY in $(bbr_tcp_keys "$GROUP"); do
+        [[ "$(bbr_tcp_value_description "$KEY" 0)" = 已关闭* ]] || fail "off status for $KEY"
+    done
+done
+[[ "$(bbr_tcp_value_description net.ipv4.tcp_fastopen 1027)" = *'需核对 TFO 位标志'* ]] || fail 'advanced TFO flags misclassified'
+[[ "$(bbr_tcp_value_description net.ipv4.tcp_ecn 99)" = 未知取值* ]] || fail 'unknown ECN value misclassified'
+BBR_FAIL_READ=net.ipv4.tcp_fastopen
+OUTPUT=$(bbr_tcp_status)
+[[ "$OUTPUT" = *'当前: 不支持或不可读（无法判断开关状态）'* ]] || fail 'unreadable value shown as off'
+BBR_FAIL_READ=''
+(
+    print_header() { printf '%s\n' "$1"; }
+    bbr_tcp_set() { fail 'viewing/cancelling menu changed TCP settings'; }
+    OUTPUT=$(bbr_tcp_menu <<< $'1\n0\n2\n0\n3\n0\n0')
+    [[ "$OUTPUT" = *'启用（推荐 3：客户端 + 服务端）'* ]] || fail 'TFO action recommendation missing'
+    [[ "$OUTPUT" = *'ECN=1 + fallback=1'* ]] || fail 'ECN action values missing'
+    [[ "$OUTPUT" = *'ECN=0；保留 fallback=1'* ]] || fail 'ECN off action hides retained fallback'
+    [[ "$OUTPUT" = *'启用按需探测（推荐 1）'* ]] || fail 'MTU action recommendation missing'
+    [[ "$OUTPUT" = *'不代表每条连接已使用或一定提速'* ]] || fail 'kernel configuration caveat missing'
+)
+[ ! -s "$WRITE_LOG" ] || fail 'status display wrote sysctl values'
+cmp -s "$SYSCTL_FILE" "$TEST_CASE/display-before.conf" || fail 'status display changed saved config'
+cmp -s "$BBR_BASELINE_FILE" "$TEST_CASE/display-before.baseline" || fail 'status display changed baseline'
+
 fixture preferences
 CONFIG=$(bbr_generate_config 8192 8192 4096 10 balanced 0)
 ! bbr_config_has_key "$CONFIG" net.ipv4.tcp_ecn || fail 'default profile enabled ECN'
