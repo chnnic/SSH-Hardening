@@ -27,6 +27,8 @@ fixture() {
     BBR_IGNORE_WRITE=''
     BBR_SIDE_EFFECT=''
     BBR_SIGNAL=''
+    BBR_FORWARD_MODEL=0
+    BBR_FAIL_READ=''
     local KEY VALUE PATHNAME
     while IFS='=' read -r KEY VALUE; do
         PATHNAME=$(bbr_sysctl_path "$KEY")
@@ -51,11 +53,11 @@ EOF
 
 # shellcheck disable=SC2329 # called by production functions
 sysctl() {
-    local KEY="${2%%=*}" VALUE="${2#*=}" PATHNAME
+    local KEY="${2%%=*}" VALUE="${2#*=}" PATHNAME EFFECT
     PATHNAME=$(bbr_sysctl_path "$KEY")
     [ -f "$PATHNAME" ] || return 1
     case "$1" in
-        -n) cat "$PATHNAME" ;;
+        -n) [ "$KEY" != "$BBR_FAIL_READ" ] && cat "$PATHNAME" ;;
         -w)
             printf '%s\n' "$2" >> "$WRITE_LOG"
             [ "$2" != "$BBR_FAIL_WRITE" ] || { echo 'permission denied' >&2; return 1; }
@@ -65,9 +67,47 @@ sysctl() {
             if [ "$2" = "$BBR_SIDE_EFFECT" ]; then
                 printf '9\n' > "$(bbr_sysctl_path net.core.rmem_max)"
             fi
+            if [ "$BBR_FORWARD_MODEL" = 1 ]; then
+                case "$KEY" in
+                    net.ipv6.conf.all.forwarding)
+                        for EFFECT in "$BBR_PROC_SYS"/net/ipv6/conf/*/forwarding; do
+                            printf '%s\n' "$VALUE" > "$EFFECT"
+                        done
+                        if [ "$VALUE" = 0 ]; then
+                            printf '0\n' > "$BBR_PROC_SYS/net/ipv6/conf/wg0/force_forwarding"
+                        fi ;;
+                    net.ipv4.ip_forward)
+                        for EFFECT in "$BBR_PROC_SYS"/net/ipv4/conf/*/forwarding; do
+                            printf '%s\n' "$VALUE" > "$EFFECT"
+                        done
+                        printf '%s\n' "$((1 - VALUE))" > "$BBR_PROC_SYS/net/ipv4/conf/all/accept_redirects" ;;
+                esac
+                case "$KEY:$VALUE" in
+                    net.ipv6.conf.default.forwarding:*) ;;
+                    net.ipv6.conf.*.forwarding:1)
+                        if [ "$(cat "$BBR_PROC_SYS/net/ipv6/conf/eth0/accept_ra")" != 2 ]; then
+                            printf 'absent\n' > "$TEST_CASE/ra-route"
+                        fi ;;
+                esac
+            fi
             ;;
         *) return 1 ;;
     esac
+}
+
+forwarding_fixture() {
+    local FAMILY IFACE
+    BBR_FORWARD_MODEL=1
+    for FAMILY in ipv4 ipv6; do
+        for IFACE in all default eth0 wg0 eth0.100; do
+            mkdir -p "$BBR_PROC_SYS/net/$FAMILY/conf/$IFACE"
+            printf '0\n' > "$BBR_PROC_SYS/net/$FAMILY/conf/$IFACE/forwarding"
+            printf '1\n' > "$BBR_PROC_SYS/net/$FAMILY/conf/$IFACE/accept_ra"
+        done
+    done
+    printf '0\n' > "$BBR_PROC_SYS/net/ipv4/conf/all/accept_redirects"
+    printf '1\n' > "$BBR_PROC_SYS/net/ipv6/conf/wg0/force_forwarding"
+    printf 'present\n' > "$TEST_CASE/ra-route"
 }
 
 fixture preferences
@@ -226,14 +266,140 @@ bbr_apply_sysctl $'net.ipv4.tcp_rmem = 4096\t131072\t8192\nnet.core.rmem_max = 8
 [ "$(bbr_config_value "$(cat "$SYSCTL_FILE")" net.core.rmem_max)" = 16384 ] || fail 'last assignment did not win'
 
 fixture locked
-mkdir "${SYSCTL_FILE}.lock"
-! bbr_tcp_set TFO on >/dev/null 2>&1 || fail 'concurrent apply ignored lock'
+(
+    exec 8>>"${SYSCTL_FILE}.lock"
+    flock -n 8 || fail 'acquire competing lock'
+    ! bbr_tcp_set TFO on >/dev/null 2>&1 || fail 'concurrent apply ignored lock'
+)
 [ ! -s "$WRITE_LOG" ] || fail 'locked apply changed runtime'
+bbr_tcp_set TFO on >/dev/null || fail 'released lock still blocks apply'
+
+fixture legacy_directory_lock
+mkdir "${SYSCTL_FILE}.lock"
+OUTPUT=$(bbr_tcp_set TFO on 2>&1) && fail 'bypassed unidentifiable legacy owner'
+[[ "$OUTPUT" = *'旧版 BBR 目录锁'* ]] || fail 'missing legacy lock recovery instructions'
+[ ! -s "$WRITE_LOG" ] || fail 'legacy lock changed runtime'
 rmdir "${SYSCTL_FILE}.lock"
+
+fixture killed_lock
+(
+    # Kill only the transaction subshell, after lock acquisition and before writes.
+    bbr_ensure_baseline() { sh -c 'kill -KILL "$PPID"'; }
+    ! bbr_apply_sysctl 'net.ipv4.tcp_fastopen = 3' preserve >/dev/null 2>&1 || fail 'kill injection did not fire'
+)
+bbr_tcp_set TFO on >/dev/null || fail 'SIGKILL left a stale kernel lock'
+
+fixture absent_restore
+printf 'net.ipv4.tcp_adv_win_scale = 2\nnet.ipv6.conf.old0.accept_ra = 2\n' >> "$SYSCTL_FILE"
+printf 'net.ipv4.tcp_adv_win_scale = 1\nnet.ipv6.conf.old0.accept_ra = 1\n' > "$BBR_BASELINE_FILE"
+CONFIG=$(bbr_generate_config 8192 8192 4096 10 balanced 0)
+bbr_apply_sysctl "$CONFIG" baseline >/dev/null || fail 'obsolete restore blocked migration'
+! grep -qE '^(net.ipv4.tcp_adv_win_scale|net.ipv6.conf.old0.accept_ra)=' "$WRITE_LOG" || fail 'wrote an absent restore key'
+! bbr_config_has_key "$(cat "$SYSCTL_FILE")" net.ipv6.conf.old0.accept_ra || fail 'retained obsolete interface'
+
+fixture restore_permission
+printf 'vm.min_free_kbytes = 32768\n' > "$BBR_BASELINE_FILE"
+mkdir -p "$BBR_PROC_SYS/vm"
+printf '65536\n' > "$BBR_PROC_SYS/vm/min_free_kbytes"
+printf 'vm.min_free_kbytes = 65536\n' >> "$SYSCTL_FILE"
+cp "$SYSCTL_FILE" "$TEST_CASE/before.conf"
+BBR_FAIL_WRITE=vm.min_free_kbytes=32768
+CONFIG=$(bbr_generate_config 8192 8192 4096 10 balanced 0)
+! bbr_apply_sysctl "$CONFIG" baseline >/dev/null 2>&1 || fail 'restore permission failure was skipped'
+cmp -s "$SYSCTL_FILE" "$TEST_CASE/before.conf" || fail 'restore permission failure persisted'
+
+fixture required_restore_missing
+bbr_tcp_set ECN on >/dev/null
+mv "$(bbr_sysctl_path net.ipv4.tcp_ecn_fallback)" "$TEST_CASE/absent-fallback"
+: > "$WRITE_LOG"
+! bbr_tcp_set ECN system >/dev/null 2>&1 || fail 'explicit restore silently dropped required key'
+[ ! -s "$WRITE_LOG" ] || fail 'missing required restore changed runtime'
+
+fixture ipv6_order
+forwarding_fixture
+CONFIG=$'# order regression\nnet.ipv6.conf.all.forwarding = 1\nnet.ipv6.conf.eth0.accept_ra = 2\n# VPS_TOOLS_TCP_ECN=system\nnet.ipv6.conf.default.accept_ra = 2'
+bbr_apply_sysctl "$CONFIG" preserve >/dev/null || fail 'IPv6 forwarding apply'
+[ "$(cat "$TEST_CASE/ra-route")" = present ] || fail 'apply purged the RA route'
+grep -qx '# VPS_TOOLS_TCP_ECN=system' "$SYSCTL_FILE" || fail 'ordering lost management metadata'
+# Simulate a reboot loader reading the saved file without the runtime planner.
+forwarding_fixture
+while IFS='=' read -r KEY VALUE; do
+    KEY=$(printf '%s' "$KEY" | bbr_sysctl_normalize)
+    VALUE=$(printf '%s' "$VALUE" | bbr_sysctl_normalize)
+    case "$KEY" in ''|\#*) continue ;; esac
+    sysctl -w "$KEY=$VALUE"
+done < "$SYSCTL_FILE"
+[ "$(cat "$TEST_CASE/ra-route")" = present ] || fail 'persistent order purged the RA route'
+
+fixture ipv6_rollback
+forwarding_fixture
+printf '1\n' > "$BBR_PROC_SYS/net/ipv6/conf/wg0/forwarding"
+printf '1\n' > "$BBR_PROC_SYS/net/ipv6/conf/eth0.100/forwarding"
+BBR_FAIL_WRITE=net.core.wmem_max=8192
+CONFIG=$'net.ipv6.conf.all.forwarding = 1\nnet.ipv6.conf.eth0.accept_ra = 2\nnet.core.wmem_max = 8192'
+! bbr_apply_sysctl "$CONFIG" preserve >/dev/null 2>&1 || fail 'IPv6 failed apply succeeded'
+for KEY in all default eth0; do
+    [ "$(cat "$BBR_PROC_SYS/net/ipv6/conf/$KEY/forwarding")" = 0 ] || fail "IPv6 $KEY forwarding not restored"
+done
+[ "$(sysctl -n net.ipv6.conf.wg0.forwarding)" = 1 ] || fail 'mixed wg0 forwarding lost'
+[ "$(sysctl -n net.ipv6.conf.eth0/100.forwarding)" = 1 ] || fail 'dotted interface forwarding lost'
+[ "$(sysctl -n net.ipv6.conf.wg0.force_forwarding)" = 1 ] || fail 'force_forwarding lost'
+[ "$(sysctl -n net.ipv6.conf.eth0.accept_ra)" = 1 ] || fail 'RA guard not restored'
+[ "$(cat "$TEST_CASE/ra-route")" = present ] || fail 'rollback purged RA route'
+cmp -s "$SYSCTL_FILE" "$TEST_CASE/original.conf" || fail 'IPv6 rollback persisted'
+
+fixture ipv4_rollback
+forwarding_fixture
+printf '1\n' > "$BBR_PROC_SYS/net/ipv4/conf/wg0/forwarding"
+BBR_FAIL_WRITE=net.core.wmem_max=8192
+! bbr_apply_sysctl $'net.ipv4.ip_forward = 1\nnet.core.wmem_max = 8192' preserve >/dev/null 2>&1 || fail 'IPv4 failed apply succeeded'
+[ "$(sysctl -n net.ipv4.conf.wg0.forwarding)" = 1 ] || fail 'IPv4 interface forwarding lost'
+[ "$(sysctl -n net.ipv4.conf.all.accept_redirects)" = 0 ] || fail 'IPv4 redirect value lost'
+
+fixture affected_unreadable
+forwarding_fixture
+BBR_FAIL_READ=net.ipv6.conf.wg0.forwarding
+! bbr_apply_sysctl 'net.ipv6.conf.all.forwarding = 1' preserve >/dev/null 2>&1 || fail 'accepted missing affected snapshot value'
+[ ! -s "$WRITE_LOG" ] || fail 'incomplete snapshot modified runtime'
+
+fixture rollback_final_readback
+printf '8192\n' > "$(bbr_sysctl_path net.core.rmem_max)"
+printf '8192\n' > "$(bbr_sysctl_path net.core.wmem_max)"
+printf 'net.core.rmem_max = 4096\nnet.core.wmem_max = 4096\n' > "$TEST_CASE/snapshot"
+BBR_SIDE_EFFECT=net.core.wmem_max=4096
+! bbr_restore_runtime_snapshot "$TEST_CASE/snapshot" >/dev/null 2>&1 || fail 'rollback claimed success despite final mismatch'
+
+fixture dotted_interface_profile
+(
+    bbr_default_ipv6_iface() { echo eth0.100; }
+    CONFIG=$(bbr_generate_config 8192 8192 4096 10 relay 1)
+    bbr_config_has_key "$CONFIG" net.ipv6.conf.eth0/100.accept_ra || fail 'dotted RA key not escaped'
+)
 
 fixture concurrent_change
 ! bbr_apply_sysctl 'net.ipv4.tcp_fastopen = 3' preserve '' net.ipv4.tcp_fastopen net.ipv4.tcp_fastopen 'stale config' >/dev/null 2>&1 || fail 'stale enhancement request overwrote newer config'
 [ ! -s "$WRITE_LOG" ] || fail 'stale request wrote runtime'
+
+fixture concurrent_preset
+bbr_tcp_set TFO off >/dev/null
+(
+    bbr_preflight() { :; }
+    bbr_backup_sysctl() { :; }
+    # Change the file after the confirmation path captured its original version.
+    bbr_generate_config() {
+        bbr_tcp_set TFO on >/dev/null
+        printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_fastopen = 0\n'
+    }
+    ! bbr_confirm_apply 8192 8192 4096 10 test test balanced <<< $'n\ny' >/dev/null 2>&1 || fail 'preset overwrote concurrent toggle'
+)
+[ "$(sysctl -n net.ipv4.tcp_fastopen)" = 3 ] || fail 'concurrent TFO preference lost'
+[ "$(bbr_config_value "$(cat "$SYSCTL_FILE")" net.ipv4.tcp_fastopen)" = 3 ] || fail 'concurrent preference persistence lost'
+
+fixture consistent_generation
+ORIGINAL=$(cat "$SYSCTL_FILE")
+bbr_tcp_set TFO off >/dev/null
+CONFIG=$(bbr_generate_config 8192 8192 4096 10 balanced 0 "$ORIGINAL")
+[ "$(bbr_config_value "$CONFIG" net.ipv4.tcp_fastopen)" = 3 ] || fail 'generation reread preferences outside captured version'
 
 fixture diagnostics
 mkdir -p "$TEST_CASE/etc" "$TEST_CASE/usr" "$BBR_PROC_NET"

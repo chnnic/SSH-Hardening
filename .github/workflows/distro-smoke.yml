@@ -14,16 +14,16 @@ jobs:
         include:
           - image: debian:12
             pm: apt
-            setup: apt-get update && apt-get install -y bash python3
+            setup: apt-get update && apt-get install -y bash python3 util-linux
           - image: ubuntu:24.04
             pm: apt
-            setup: apt-get update && apt-get install -y bash python3
+            setup: apt-get update && apt-get install -y bash python3 util-linux
           - image: alpine:3.20
             pm: apk
-            setup: apk add --no-cache bash python3
+            setup: apk add --no-cache bash python3 util-linux
           - image: rockylinux:9
             pm: dnf
-            setup: dnf install -y bash python3 diffutils
+            setup: dnf install -y bash python3 diffutils util-linux
     steps:
       - name: Checkout
         uses: actions/checkout@v5

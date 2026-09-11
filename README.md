@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.12.6
+# VPS 开荒脚本 V3.12.7
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -16,7 +16,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 ### 离线安装包
 
-适合不能访问 GitHub 的中国内地 VPS。以下使用已发布的 V3.12.4 离线包；V3.12.6 可通过本节末尾的构建命令从最新源码生成。先在一台可以访问 GitHub 的电脑或跳板机下载：
+适合不能访问 GitHub 的中国内地 VPS。以下使用已发布的 V3.12.4 离线包；V3.12.7 可通过本节末尾的构建命令从最新源码生成。先在一台可以访问 GitHub 的电脑或跳板机下载：
 
 ```bash
 curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.4/vps-tools-offline-V3.12.4.tar.gz
@@ -217,7 +217,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 - 中转/落地场景默认不修改内核转发；仅在用户确认路由/NAT 用途后启用，并同时设置默认与当前出口 `accept_ra=2`
 - 所有待应用参数逐项写入、回读并在提交前整体复核；支持的参数写入失败、值不一致或持久化失败时回滚本次修改
 - 内核不存在的非核心参数注释跳过；明确选择的 TCP 增强参数以及 BBR/`fq` 不允许静默跳过。权限不足与不支持分别报告
-- 同一配置文件通过事务锁防止同时写入，INT/TERM/HUP 中断触发回滚；回滚失败时保留快照并明确报错。强制终止/断电不保证自动恢复
+- 运行应用和持久化文件均先设置 `accept_ra=2`，再开启 IPv6 转发，避免清掉出口的 RA 默认路由；支持接口名含点号（如 `eth0.100`）
+- 转发事务的回滚快照覆盖 default/各接口的 forwarding、受影响的 IPv4 redirects、IPv6 force_forwarding 与 RA；恢复按依赖顺序执行并最终整体回读，独立 TCP 开关不会扩大写入范围
+- 同一配置文件通过 `flock` 内核锁防止同时写入，缺少时安装 `util-linux`；INT/TERM/HUP 中断触发回滚，回滚失败时保留快照。SIGKILL/断电仍不保证参数自动恢复，但锁会随进程退出/重启释放；锁文件保留不表示正在运行，不能删除正在使用的锁文件
+- 从 V3.12.6 升级若遇到遗留的 `.lock` **目录**，脚本会明确提示：确认旧进程已结束后，手动 `rmdir /etc/sysctl.d/99-vps-bbr.conf.lock` 再重试；不会擅自删除无法辨认所有者的旧锁
+- 旧内核参数或已消失接口的恢复项会提示后跳过；仍然存在的恢复项若无权限则失败回滚。预设生成使用一致的配置快照，提交时发现其他操作已更改配置会取消并提示重试
 
 **TCP 增强（BBR 菜单 → `9`）：**
 - TFO、ECN + fallback、MTU 黑洞探测分别提供启用、关闭、恢复首次基线并退出管理
@@ -680,6 +684,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.12.7** | 修复 IPv6 RA/转发运行及持久化顺序，回滚恢复转发连带修改的接口状态并最终复核；使用可自动释放的 flock 锁；跳过消失的旧恢复项；防止预设覆盖并发 TCP 偏好；增加隔离模拟与真实 Linux 网络命名空间回归测试 |
 | **V3.12.6** | 新增 TFO / ECN + fallback / MTU 独立增强设置，保留跨预设偏好及恢复原值；扩展全部参数回读、失败与中断回滚；诊断实际队列、配置漂移/来源及 TCP/softnet 累计计数 |
 | **V3.12.5** | 一键 DD / 系统重装界面增加中英文双语菜单、风险提示、确认提示、认证说明和临时安装环境说明；补充 BusyBox / `~ #` 状态解释 |
 | **V3.12.4** | 修复 Debian 12 同时运行 systemd-resolved 与 resolvconf 时后端误判：仅在 `/etc/resolv.conf` 真正链接到 systemd-resolved 时使用该后端，否则使用 openresolv 覆盖模式；避免全局 DNS 写入成功但实际解析文件仍保留旧 DNS |

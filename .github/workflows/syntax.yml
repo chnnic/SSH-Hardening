@@ -14,7 +14,7 @@ jobs:
 
       - name: Check shell syntax
         run: |
-          for file in SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/bbr-enhancements.sh; do
+          for file in SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/bbr-enhancements.sh tests/bbr-netns.sh; do
             bash -n "$file"
           done
 
@@ -22,7 +22,7 @@ jobs:
         run: ./build.sh --check
 
       - name: Run ShellCheck
-        run: shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/bbr-enhancements.sh
+        run: shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/bbr-enhancements.sh tests/bbr-netns.sh
 
       - name: Verify release checksum
         run: sha256sum -c SSH-Hardening.sh.sha256
@@ -32,6 +32,9 @@ jobs:
 
       - name: Run fault injection tests
         run: tests/fault-injection.sh
+
+      - name: Test BBR with real Linux network namespaces
+        run: sudo bash tests/bbr-netns.sh
 
       - name: Test offline package
         run: tests/offline-package.sh
