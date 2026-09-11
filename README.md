@@ -16,7 +16,26 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 ### 离线安装包
 
-适合不能访问 GitHub 的中国内地 VPS。以下使用已发布的 V3.12.4 离线包；V3.12.7 可通过本节末尾的构建命令从最新源码生成。先在一台可以访问 GitHub 的电脑或跳板机下载：
+适合不能访问 GitHub 的中国内地 VPS。以下使用已发布的 V3.12.4 离线包；V3.12.7 可通过本节末尾的构建命令从最新源码生成。
+
+**方式一：中国内地 VPS 通过加速链接直接下载**
+
+在原始 GitHub 下载链接前加上 `https://gh-proxy.org/` 即可使用第三方加速下载。安装包和 SHA256 校验文件都使用相同前缀。以 root 用户登录 VPS 后执行：
+
+```bash
+cd /root
+curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.4/vps-tools-offline-V3.12.4.tar.gz
+curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.4/vps-tools-offline-V3.12.4.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.12.4.tar.gz.sha256
+```
+
+也可以点击下载：[离线安装包（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.4/vps-tools-offline-V3.12.4.tar.gz) · [SHA256 校验文件（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.4/vps-tools-offline-V3.12.4.tar.gz.sha256)。
+
+> 加速服务由第三方提供，可用性取决于当地网络；若不可用，请使用下方直连下载后上传的方式。SHA256 用于完整性核验；包和校验文件都来自同一镜像时，不能独立证明来源可信，安全要求较高时应从 GitHub 或其他可信渠道另行获取校验值。校验失败时不要继续安装。
+
+**方式二：GitHub 直连下载后上传**
+
+先在一台可以访问 GitHub 的电脑或跳板机下载：
 
 ```bash
 curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.4/vps-tools-offline-V3.12.4.tar.gz
@@ -30,7 +49,7 @@ sha256sum -c vps-tools-offline-V3.12.4.tar.gz.sha256
 scp vps-tools-offline-V3.12.4.tar.gz* root@你的VPS地址:/root/
 ```
 
-登录 VPS 后离线安装：
+方式一直接下载或方式二上传完成后，确认两个文件都在 VPS 的 `/root` 目录，登录 VPS 后离线安装：
 
 ```bash
 cd /root
