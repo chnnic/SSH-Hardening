@@ -26,12 +26,14 @@ jobs:
 
       - name: Validate scripts
         run: |
-          bash -n SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh
+          bash -n SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/release-version.sh tests/bbr-enhancements.sh tests/bbr-netns.sh
           ./build.sh --check
-          shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh
+          tests/release-version.sh
+          shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/release-version.sh tests/bbr-enhancements.sh tests/bbr-netns.sh
           sha256sum -c SSH-Hardening.sh.sha256
           tests/smoke.sh
           tests/fault-injection.sh
+          sudo bash tests/bbr-netns.sh
           tests/offline-package.sh
 
       - name: Build release assets
@@ -43,10 +45,26 @@ jobs:
         run: |
           version=$(sed -nE 's/^APP_VERSION="(V[0-9]+\.[0-9]+(\.[0-9]+)?)".*/\1/p' SSH-Hardening.sh | head -1)
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/* SSH-Hardening.sh SSH-Hardening.sh.sha256 --clobber
+            # Do not silently replace already-published versioned artifacts.
+            gh release upload "$GITHUB_REF_NAME" dist/* SSH-Hardening.sh SSH-Hardening.sh.sha256
           else
             gh release create "$GITHUB_REF_NAME" \
               dist/* SSH-Hardening.sh SSH-Hardening.sh.sha256 \
+              --verify-tag \
               --title "VPS Tools $version" \
               --notes "完整脚本与离线安装包。离线包内含独立安装器和 SHA256 校验，适合下载后传入无法访问 GitHub 的 VPS。"
           fi
+
+      - name: Verify published release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="V${GITHUB_REF_NAME#v}"
+          archive="vps-tools-offline-${version}.tar.gz"
+          verify_dir=$(mktemp -d "$RUNNER_TEMP/offline-release-verify.XXXXXX")
+          gh release download "$GITHUB_REF_NAME" --dir "$verify_dir" \
+            --pattern "$archive" --pattern "$archive.sha256" \
+            --pattern SSH-Hardening.sh --pattern SSH-Hardening.sh.sha256
+          (cd "$verify_dir" && sha256sum -c "$archive.sha256" && sha256sum -c SSH-Hardening.sh.sha256)
+          cmp SSH-Hardening.sh "$verify_dir/SSH-Hardening.sh"
+          tar -xOf "$verify_dir/$archive" "vps-tools-offline-$version/SSH-Hardening.sh" | cmp SSH-Hardening.sh -
