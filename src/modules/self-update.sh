@@ -8,6 +8,68 @@ MANIFEST_URL="https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/heads/
 GITHUB_REF_URL="https://api.github.com/repos/chnnic/SSH-Hardening/git/ref/heads/main"
 LOCAL_BIN_DIR="${LOCAL_BIN_DIR:-/usr/local/bin}"
 LOCAL_SCRIPT="${LOCAL_SCRIPT:-${LOCAL_BIN_DIR}/vps-tools}"
+VPS_UPDATE_CACHE="${VPS_UPDATE_CACHE:-${VPS_DATA_DIR}/update/latest-version}"
+
+# 版本是数字分段而不是字符串；V3.12.10 > V3.12.9，V3.12 == V3.12.0。
+# 在交给 awk 或界面前严格校验，拒绝多行、ANSI 转义和任意缓存文本。
+self_version_valid() {
+    [[ "$1" =~ ^[vV]?[0-9]{1,9}[.][0-9]{1,9}([.][0-9]{1,9})?$ ]]
+}
+
+self_version_newer() {
+    local REMOTE="$1" CURRENT="$2"
+    self_version_valid "$REMOTE" && self_version_valid "$CURRENT" || return 1
+    LC_ALL=C awk -v remote="$REMOTE" -v current="$CURRENT" 'BEGIN {
+        sub(/^[vV]/, "", remote); sub(/^[vV]/, "", current)
+        split(remote, r, "."); split(current, c, ".")
+        for(i=1;i<=3;i++) {
+            if(r[i]+0 > c[i]+0) exit 0
+            if(r[i]+0 < c[i]+0) exit 1
+        }
+        exit 1
+    }'
+}
+
+self_cached_update_version() {
+    local CACHED
+    [ -f "$VPS_UPDATE_CACHE" ] && [ ! -L "$VPS_UPDATE_CACHE" ] || return 1
+    CACHED=$(cat "$VPS_UPDATE_CACHE" 2>/dev/null) || return 1
+    self_version_newer "$CACHED" "$APP_VERSION" || return 1
+    printf 'V%s\n' "${CACHED#[vV]}"
+}
+
+self_update_notice() {
+    local NEW_VER
+    NEW_VER=$(self_cached_update_version) || return 0
+    printf '  %s%s! 新版本 %s 可用%s  %s输入 m 后选择 2 更新%s\n' \
+        "$YELLOW" "$BOLD" "$NEW_VER" "$NC" "$DIM" "$NC"
+}
+
+self_check_update() {
+    local REMOTE_VER CACHE_DIR CACHE_TMP
+    # 不等待网络：等于/低于当前运行版本的旧通知立即失效。首页自身也
+    # 再次比较，因此后台任务未完成或旧进程后来写入缓存都不会误报。
+    if ! self_cached_update_version >/dev/null; then
+        rm -f "$VPS_UPDATE_CACHE" 2>/dev/null || true
+    fi
+    REMOTE_VER=$(
+        set -o pipefail
+        curl -fsSL --max-time 5 "$SCRIPT_URL" 2>/dev/null \
+            | sed -nE 's/^APP_VERSION="([vV]?[0-9]+[.][0-9]+([.][0-9]+)?)"[[:space:]]*$/\1/p'
+    ) || return 0
+    self_version_valid "$REMOTE_VER" || return 0
+    if ! self_version_newer "$REMOTE_VER" "$APP_VERSION"; then
+        rm -f "$VPS_UPDATE_CACHE" 2>/dev/null || true
+        return 0
+    fi
+    CACHE_DIR=$(dirname "$VPS_UPDATE_CACHE")
+    mkdir -p "$CACHE_DIR" 2>/dev/null || return 0
+    CACHE_TMP=$(mktemp "${VPS_UPDATE_CACHE}.tmp.XXXXXX") || return 0
+    if ! printf 'V%s\n' "${REMOTE_VER#[vV]}" > "$CACHE_TMP" || ! mv -f "$CACHE_TMP" "$VPS_UPDATE_CACHE"; then
+        rm -f "$CACHE_TMP"
+    fi
+    return 0
+}
 
 file_sha256() {
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
@@ -344,7 +406,7 @@ self_update() {
         fi
     done
     # 清除更新提示，避免新版本启动后还显示旧提示
-    rm -f /tmp/.vps_new_version 2>/dev/null
+    rm -f "$VPS_UPDATE_CACHE" 2>/dev/null
     warn "即将用新版本重启脚本..."
     sleep 1
     exec "$LOCAL_SCRIPT"

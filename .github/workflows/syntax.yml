@@ -14,7 +14,7 @@ jobs:
 
       - name: Check shell syntax
         run: |
-          for file in SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/release-version.sh tests/bbr-enhancements.sh tests/bbr-netns.sh; do
+          for file in SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/release-version.sh tests/bbr-enhancements.sh tests/bbr-netns.sh tests/update-notice.sh; do
             bash -n "$file"
           done
 
@@ -25,7 +25,7 @@ jobs:
         run: tests/release-version.sh
 
       - name: Run ShellCheck
-        run: shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/release-version.sh tests/bbr-enhancements.sh tests/bbr-netns.sh
+        run: shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/release-version.sh tests/bbr-enhancements.sh tests/bbr-netns.sh tests/update-notice.sh
 
       - name: Verify release checksum
         run: sha256sum -c SSH-Hardening.sh.sha256

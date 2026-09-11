@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.12.7
+# VPS 开荒脚本 V3.12.8
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -16,7 +16,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 ### 离线安装包
 
-适合不能访问 GitHub 的中国内地 VPS。以下下载与当前脚本一致的 **V3.12.7** 离线包。每次脚本版本更新都会一并构建、校验和发布对应离线包，并同步本节的下载链接。
+适合不能访问 GitHub 的中国内地 VPS。以下下载与当前脚本一致的 **V3.12.8** 离线包。每次脚本版本更新都会一并构建、校验和发布对应离线包，并同步本节的下载链接。
 
 **方式一：中国内地 VPS 通过加速链接直接下载**
 
@@ -24,12 +24,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 ```bash
 cd /root
-curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.7/vps-tools-offline-V3.12.7.tar.gz
-curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.7/vps-tools-offline-V3.12.7.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.12.7.tar.gz.sha256
+curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.8/vps-tools-offline-V3.12.8.tar.gz
+curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.8/vps-tools-offline-V3.12.8.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.12.8.tar.gz.sha256
 ```
 
-也可以点击下载：[离线安装包（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.7/vps-tools-offline-V3.12.7.tar.gz) · [SHA256 校验文件（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.7/vps-tools-offline-V3.12.7.tar.gz.sha256)。
+也可以点击下载：[离线安装包（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.8/vps-tools-offline-V3.12.8.tar.gz) · [SHA256 校验文件（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.8/vps-tools-offline-V3.12.8.tar.gz.sha256)。
 
 > 加速服务由第三方提供，可用性取决于当地网络；若不可用，请使用下方直连下载后上传的方式。SHA256 用于完整性核验；包和校验文件都来自同一镜像时，不能独立证明来源可信，安全要求较高时应从 GitHub 或其他可信渠道另行获取校验值。校验失败时不要继续安装。
 
@@ -38,29 +38,31 @@ sha256sum -c vps-tools-offline-V3.12.7.tar.gz.sha256
 先在一台可以访问 GitHub 的电脑或跳板机下载：
 
 ```bash
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.7/vps-tools-offline-V3.12.7.tar.gz
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.7/vps-tools-offline-V3.12.7.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.12.7.tar.gz.sha256
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.8/vps-tools-offline-V3.12.8.tar.gz
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.8/vps-tools-offline-V3.12.8.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.12.8.tar.gz.sha256
 ```
 
 再通过 `scp`、SFTP 或 WinSCP 将两个文件传到 VPS。Linux/macOS 示例：
 
 ```bash
-scp vps-tools-offline-V3.12.7.tar.gz* root@你的VPS地址:/root/
+scp vps-tools-offline-V3.12.8.tar.gz* root@你的VPS地址:/root/
 ```
 
 方式一直接下载或方式二上传完成后，确认两个文件都在 VPS 的 `/root` 目录，登录 VPS 后离线安装：
 
 ```bash
 cd /root
-sha256sum -c vps-tools-offline-V3.12.7.tar.gz.sha256
-tar -xzf vps-tools-offline-V3.12.7.tar.gz
-cd vps-tools-offline-V3.12.7
+sha256sum -c vps-tools-offline-V3.12.8.tar.gz.sha256
+tar -xzf vps-tools-offline-V3.12.8.tar.gz
+cd vps-tools-offline-V3.12.8
 bash install.sh
 v
 ```
 
 安装阶段不会访问网络。安装包包含完整脚本、内部 SHA256 和独立安装器；不会覆盖其他程序已经占用的 `v` / `V` 命令。安装第三方软件、DDNS、自更新等功能仍需要相应网络连接。
+
+首页更新提示以当前运行的 `APP_VERSION` 为准，按数字分段比较版本；即使断网或后台检查尚未完成，也不会把相同或更旧的缓存版本显示为新版本。新版本使用 `/var/lib/vps-tools/update/latest-version` 缓存，不再读取旧的 `/tmp/.vps_new_version`。
 
 开发者也可以从仓库源码自行构建同样的安装包：
 
@@ -703,6 +705,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.12.8** | 修复离线安装后同版本仍提示更新：显示前与当前运行版本做数字比较，断网时过滤过期缓存；更新缓存迁入工具数据目录并原子写入，拒绝异常版本和不完整下载；新增首页及离线安装回归测试 |
 | **V3.12.7** | 修复 IPv6 RA/转发运行及持久化顺序，回滚恢复转发连带修改的接口状态并最终复核；使用可自动释放的 flock 锁；跳过消失的旧恢复项；防止预设覆盖并发 TCP 偏好；增加隔离模拟与真实 Linux 网络命名空间回归测试 |
 | **V3.12.6** | 新增 TFO / ECN + fallback / MTU 独立增强设置，保留跨预设偏好及恢复原值；扩展全部参数回读、失败与中断回滚；诊断实际队列、配置漂移/来源及 TCP/softnet 累计计数 |
 | **V3.12.5** | 一键 DD / 系统重装界面增加中英文双语菜单、风险提示、确认提示、认证说明和临时安装环境说明；补充 BusyBox / `~ #` 状态解释 |

@@ -7,24 +7,6 @@
 # ══════════════════════════════════════════════════════════
 #  主菜单
 # ══════════════════════════════════════════════════════════
-# ── 后台版本检测 ────────────────────────────────────────
-self_check_update() {
-    local REMOTE_VER
-    REMOTE_VER=$(curl -fsSL --max-time 5 "$SCRIPT_URL" 2>/dev/null \
-        | grep -oE 'VPS 开荒脚本 V[0-9]+[.][0-9]+[.][0-9]+|VPS 开荒脚本 V[0-9]+[.][0-9]+' \
-        | head -1 | grep -oE 'V[0-9]+[.][0-9]+([.][0-9]+)?')
-    [ -z "$REMOTE_VER" ] && return
-    local CUR_VER
-    CUR_VER=$(grep -oE 'VPS 开荒脚本 V[0-9]+[.][0-9]+[.][0-9]+|VPS 开荒脚本 V[0-9]+[.][0-9]+' "$0" 2>/dev/null \
-        | head -1 | grep -oE 'V[0-9]+[.][0-9]+([.][0-9]+)?')
-    [ -z "$CUR_VER" ] && return
-    if [ "$REMOTE_VER" = "$CUR_VER" ]; then
-        rm -f /tmp/.vps_new_version 2>/dev/null
-        return
-    fi
-    echo "$REMOTE_VER" > /tmp/.vps_new_version 2>/dev/null
-}
-
 show_cli_help() {
     cat <<'EOF'
 VPS 开荒脚本 CLI
@@ -149,11 +131,8 @@ main_menu() {
         status_pair "DDNS" "$DDNS_LABEL" "$DDNS_STATE" "Docker" "$DOCKER_LABEL" "$DOCKER_STATE"
         status_pair "时间" "$SYS_TIME" "active"
         ui_hint "时区 $SYS_TZ"
-        # 更新提示
-        if [ -f /tmp/.vps_new_version ]; then
-            local NEW_VER; NEW_VER=$(cat /tmp/.vps_new_version 2>/dev/null)
-            [ -n "$NEW_VER" ] && echo -e "  ${YELLOW}${BOLD}! 新版本 ${NEW_VER} 可用${NC}  ${DIM}输入 m 后选择 2 更新${NC}"
-        fi
+        # 即使断网或后台检测未完成，也只显示高于当前运行版本的通知。
+        self_update_notice
         box_sep
         menu_group "安全与网络"
         menu_pair "1" "SSH 工具集" "2" "Fail2ban 管理"

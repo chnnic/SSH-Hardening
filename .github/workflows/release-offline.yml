@@ -26,10 +26,12 @@ jobs:
 
       - name: Validate scripts
         run: |
-          bash -n SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/release-version.sh tests/bbr-enhancements.sh tests/bbr-netns.sh
+          for file in SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/release-version.sh tests/bbr-enhancements.sh tests/bbr-netns.sh tests/update-notice.sh; do
+            bash -n "$file"
+          done
           ./build.sh --check
           tests/release-version.sh
-          shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/release-version.sh tests/bbr-enhancements.sh tests/bbr-netns.sh
+          shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/release-version.sh tests/bbr-enhancements.sh tests/bbr-netns.sh tests/update-notice.sh
           sha256sum -c SSH-Hardening.sh.sha256
           tests/smoke.sh
           tests/fault-injection.sh

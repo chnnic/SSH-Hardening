@@ -10,6 +10,7 @@ export VPS_TOOLS_TEST_MODE=1
 source "$ROOT/SSH-Hardening.sh"
 
 bash "$ROOT/tests/bbr-enhancements.sh"
+bash "$ROOT/tests/update-notice.sh"
 
 for fn in systemd_available show_cli_help main_menu ssh_tools_menu ssh_key_count fail2ban_menu bbr_menu firewall_menu dns_menu dns_expected_nameservers dns_resolv_nameservers_match dns_systemd_resolved_linked dns_systemd_resolved_configure dns_systemd_resolved_link_apply dns_systemd_resolved_link_match dns_networkmanager_apply dns_resolvconf_configure dns_resolvconf_apply timesync_menu \
     ts_https_date_epoch ts_epoch_utc ts_https_fetch_epoch ts_https_consensus ts_sync_https \
