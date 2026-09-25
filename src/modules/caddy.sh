@@ -430,7 +430,9 @@ caddy_del_site() {
     done
     echo ""
     menu_div
-    read -rp "  请输入编号删除（直接回车取消）: " NUM
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+    menu_read NUM "请输入编号删除（直接回车取消）: " || return 0
+    [ "$NUM" = "0" ] && return 0
     [ -z "$NUM" ] && { warn "已取消"; return; }
     if ! echo "$NUM" | grep -qE '^[0-9]+$' || [ "$NUM" -lt 1 ] || [ "$NUM" -gt ${#SITES[@]} ]; then
         error "无效编号"; return
@@ -557,9 +559,9 @@ caddy_view_logs() {
             done
             echo ""
             menu_item "1" "开启实时跟踪  ${DIM}Ctrl+C 返回${NC}"
-            menu_item "0" "返回上级" "$RED"
+            menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
             echo ""
-            read -rp "$(ui_prompt '选择操作: ')" _CH
+            menu_read _CH '选择操作: ' || return 0
             if [ "$_CH" = "1" ]; then
                 trap 'echo ""; info "已退出实时跟踪"; trap - INT' INT
                 journalctl -u caddy -f 2>/dev/null
@@ -612,9 +614,9 @@ except: print('')" 2>/dev/null)
     echo ""
     menu_div
     menu_item "1" "开启实时跟踪  ${DIM}Ctrl+C 返回${NC}"
-    menu_item "0" "返回上级" "$RED"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     echo ""
-    read -rp "$(ui_prompt '选择操作: ')" _CH
+    menu_read _CH '选择操作: ' || return 0
     if [ "$_CH" = "1" ]; then
         trap 'echo ""; info "已退出实时跟踪"; trap - INT' INT
         tail -f "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do echo -e "  $line"; done
@@ -669,7 +671,7 @@ caddy_menu() {
             menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
             menu_div
             echo ""
-            read -rp "$(ui_prompt '选择操作 [0-1]: ')" CH
+            menu_read CH '选择操作 [0-1]: ' || return 0
             case "$CH" in
                 1) caddy_install; ui_continue ;;
                 0) return ;;
@@ -698,7 +700,7 @@ caddy_menu() {
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "$(ui_prompt '选择操作: ')" CH
+        menu_read CH '选择操作: ' || return 0
 
         case "$CH" in
             1) caddy_list_sites ;;

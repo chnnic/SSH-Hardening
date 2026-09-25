@@ -492,4 +492,35 @@ OUTPUT=$(bbr_sysctl_drift)
 )
 [ ! -s "$WRITE_LOG" ] || fail 'full diagnostic wrote sysctl'
 
+# Exercise nested navigation without writing kernel/network settings.
+fixture menu_navigation
+(
+    safe_clear() { :; }
+    print_header() { printf 'HEADER:%s\n' "$1"; }
+    ui_pause() { :; }
+    bbr_physical_memory_mb() { echo 4096; }
+    bbr_auto_calc() { fail 'navigation unexpectedly applied auto settings'; }
+    bbr_confirm_apply() { fail 'navigation unexpectedly applied manual settings'; }
+    OUTPUT=$(bbr_menu_auto <<< $'1\n1\n0\n0\n0')
+    [ "$(printf '%s\n' "$OUTPUT" | grep -c '^HEADER:BBR 自动配置 — 选择内存')" = 2 ] || fail 'auto skipped memory parent'
+    [ "$(printf '%s\n' "$OUTPUT" | grep -c '^HEADER:BBR 自动配置 — 选择延迟')" = 2 ] || fail 'bandwidth skipped latency parent'
+    OUTPUT=$(bbr_menu_manual <<< $'1\n0\n0')
+    [ "$(printf '%s\n' "$OUTPUT" | grep -c '^HEADER:BBR 手动配置 — 选择用途')" = 2 ] || fail 'buffer skipped scene parent'
+    OUTPUT=$(bbr_menu_auto <<< $'1\n1\n00'; echo SURVIVED)
+    [[ "$OUTPUT" != *SURVIVED* ]] || fail 'nested auto 00 did not exit'
+    OUTPUT=$(bbr_menu_manual <<< $'1\n00'; echo SURVIVED)
+    [[ "$OUTPUT" != *SURVIVED* ]] || fail 'nested manual 00 did not exit'
+    OUTPUT=$(bbr_tcp_menu <<< $'1\n00'; echo SURVIVED)
+    [[ "$OUTPUT" != *SURVIVED* ]] || fail 'TCP action 00 did not exit'
+    bbr_tcp_menu <<< $'1\n0\n0' >/dev/null
+    bbr_menu_auto </dev/null >/dev/null
+    bbr_menu_manual </dev/null >/dev/null
+    # Backup selector owns a temporary list: 00 and EOF must clean it up.
+    printf 'net.core.rmem_max = 4096\n' > "${SYSCTL_FILE}.bak.test"
+    (bbr_restore_sysctl <<< 00) >/dev/null
+    bbr_restore_sysctl </dev/null >/dev/null
+    [ -z "$(find "$TEST_CASE" -name 'vps_bbr_bak.*' -print)" ] || fail 'backup navigation leaked list'
+)
+[ ! -s "$WRITE_LOG" ] || fail 'menu navigation wrote sysctl'
+
 echo 'BBR enhancement and transaction tests passed.'

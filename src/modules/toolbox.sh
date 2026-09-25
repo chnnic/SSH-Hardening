@@ -183,13 +183,16 @@ config_backup_menu() {
         [ "${#FILES[@]}" -eq 0 ] && echo -e "  ${DIM}暂无备份${NC}"
         menu_div
         menu_pair "c" "创建备份" "r" "恢复备份" "$GREEN" "$YELLOW"
-        menu_pair "d" "删除备份" "0" "返回上级" "$RED" "$RED"
-        read -rp "$(ui_prompt '选择操作: ')" CH
+        menu_item "d" "删除备份" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+        menu_read CH '选择操作: ' || return 0
         case "$CH" in
             c|C) config_backup_create manual ;;
             r|R|d|D)
                 [ "${#FILES[@]}" -gt 0 ] || { warn "暂无备份"; sleep 1; continue; }
-                read -rp "  输入备份编号: " N
+                menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+                menu_read N "输入备份编号: " || return 0
+                [ "$N" = "0" ] && continue
                 echo "$N" | grep -qE '^[0-9]+$' || { warn "编号无效"; continue; }
                 [ "$N" -ge 1 ] && [ "$N" -le "${#FILES[@]}" ] || { warn "编号无效"; continue; }
                 if echo "$CH" | grep -qi '^r$'; then
@@ -242,9 +245,9 @@ config_transfer_menu() {
         echo ""; menu_div
         menu_item "1" "导出当前配置" "$GREEN"
         menu_item "2" "导入配置包" "$YELLOW"
-        menu_item "0" "返回上级" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-2]: ')" CH
+        menu_read CH '选择操作 [0-2]: ' || return 0
         case "$CH" in
             1)
                 local TARGET ARCHIVE_NAME
@@ -282,9 +285,9 @@ rollback_center_menu() {
         menu_item "1" "配置备份与恢复" "$GREEN"
         menu_item "2" "配置导出 / 导入" "$CYAN"
         menu_item "3" "脚本版本回滚" "$YELLOW"
-        menu_item "0" "返回上级" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-3]: ')" CH
+        menu_read CH '选择操作 [0-3]: ' || return 0
         case "$CH" in
             1) config_backup_menu ;;
             2) config_transfer_menu ;;
@@ -1114,9 +1117,9 @@ monitor_alert_service_menu() {
         ACTION_LABEL=$([ "$MON_ENABLED" = yes ] && echo "重装 / 刷新后台监控" || echo "启用后台监控")
         menu_item "1" "$ACTION_LABEL" "$GREEN"
         menu_item "2" "关闭后台监控" "$YELLOW"
-        menu_item "0" "返回上级" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-2]: ')" CH
+        menu_read CH '选择操作 [0-2]: ' || return 0
         case "$CH" in
             1)
                 MON_ENABLED=yes
@@ -1171,9 +1174,9 @@ monitor_alert_home_menu() {
         menu_item "7" "高级策略" "$GREEN"
         menu_item "8" "最近记录" "$CYAN"
         menu_item "9" "后台监控" "$GREEN"
-        menu_item "0" "返回上级" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-9]: ')" CH
+        menu_read CH '选择操作 [0-9]: ' || return 0
         case "$CH" in
             1) monitor_alert_quick_setup_menu ;;
             2) monitor_alert_notify_menu ;;
@@ -1947,9 +1950,9 @@ monitor_alert_notify_menu() {
         menu_item "2" "设置主机显示名" "$CYAN"
         menu_item "3" "发送测试推送" "$YELLOW"
         menu_item "4" "清除通知配置" "$RED"
-        menu_item "0" "返回上级" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-4]: ')" CH
+        menu_read CH '选择操作 [0-4]: ' || return 0
         case "$CH" in
             1)
                 read -rsp "$(ui_prompt 'Bot Token: ')" BOT_TOKEN
@@ -1998,9 +2001,9 @@ monitor_alert_resource_menu() {
         menu_item "3" "设置负载阈值" "$CYAN"
         menu_item "4" "服务检查开关" "$YELLOW"
         menu_item "5" "立即发送一次" "$GREEN"
-        menu_item "0" "返回上级" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-5]: ')" CH
+        menu_read CH '选择操作 [0-5]: ' || return 0
         case "$CH" in
             1)
                 read -rp "$(ui_prompt "磁盘阈值 [${MON_DISK_WARN}%]: ")" DISK_WARN_IN
@@ -2053,9 +2056,9 @@ monitor_alert_service_checks_menu() {
         menu_item "2" "切换 Fail2ban 检查" "$GREEN"
         menu_item "3" "切换 Docker 检查" "$GREEN"
         menu_item "4" "切换 Caddy 检查" "$GREEN"
-        menu_item "0" "返回上级" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-4]: ')" CH
+        menu_read CH '选择操作 [0-4]: ' || return 0
         case "$CH" in
             1) [ "${MON_CHECK_SSH:-yes}" = yes ] && MON_CHECK_SSH=no || MON_CHECK_SSH=yes ;;
             2) [ "${MON_CHECK_FAIL2BAN:-yes}" = yes ] && MON_CHECK_FAIL2BAN=no || MON_CHECK_FAIL2BAN=yes ;;
@@ -2097,9 +2100,9 @@ EOF
         menu_item "4" "校准当前周期流量" "$YELLOW"
         menu_item "5" "重置今日统计" "$YELLOW"
         menu_item "6" "立即发送一次" "$GREEN"
-        menu_item "0" "返回上级" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-6]: ')" CH
+        menu_read CH '选择操作 [0-6]: ' || return 0
         case "$CH" in
             1)
                 if [ "$MON_TRAFFIC_ENABLED" = yes ]; then
@@ -2195,9 +2198,9 @@ monitor_alert_daily_menu() {
         menu_item "2" "设置推送时间" "$CYAN"
         menu_item "3" "立即发送一次" "$YELLOW"
         menu_item "4" "关闭日报" "$RED"
-        menu_item "0" "返回上级" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-4]: ')" CH
+        menu_read CH '选择操作 [0-4]: ' || return 0
         case "$CH" in
             1)
                 if [ -z "${MON_BOT_TOKEN:-}" ] || [ -z "${MON_CHAT_ID:-}" ]; then
@@ -2267,9 +2270,9 @@ monitor_alert_renew_menu() {
         menu_item "6" "我已续费" "$YELLOW"
         menu_item "7" "立即发送一次" "$GREEN"
         menu_item "8" "$([ "${MON_RENEW_AUTO_ADVANCE:-no}" = yes ] && echo '关闭到期存活自动顺延' || echo '启用到期存活自动顺延')" "$CYAN"
-        menu_item "0" "返回上级" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-8]: ')" CH
+        menu_read CH '选择操作 [0-8]: ' || return 0
         case "$CH" in
             1)
                 local NORMAL_DATE
@@ -2357,9 +2360,9 @@ monitor_alert_advanced_menu() {
         menu_item "1" "设置冷却时间" "$GREEN"
         menu_item "2" "设置静默时段" "$YELLOW"
         menu_item "3" "开关恢复通知" "$CYAN"
-        menu_item "0" "返回上级" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-3]: ')" CH
+        menu_read CH '选择操作 [0-3]: ' || return 0
         case "$CH" in
             1)
                 read -rp "$(ui_prompt "告警冷却时间（分钟） [${MON_ALERT_COOLDOWN_MIN:-30}]: ")" COOLDOWN_IN
@@ -2413,9 +2416,9 @@ monitor_alert_quick_setup_menu() {
         menu_item "4" "设置流量阈值" "$YELLOW"
         menu_item "5" "设置续费提醒" "$YELLOW"
         menu_item "6" "启用后台监控" "$GREEN"
-        menu_item "0" "返回上级" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择操作 [0-6]: ')" CH
+        menu_read CH '选择操作 [0-6]: ' || return 0
         case "$CH" in
             1) monitor_alert_notify_menu ;;
             2)
@@ -2472,398 +2475,400 @@ monitor_alert_legacy_config_menu() {
     local CFG; CFG=$(monitor_alert_cfg)
     mkdir -p "$(dirname "$CFG")" 2>/dev/null || true
     monitor_alert_load_cfg
-    print_header "监控告警配置"
-    echo -e "  状态：${BOLD}$([ "$MON_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
-    echo -e "  磁盘阈值：${BOLD}${MON_DISK_WARN}%${NC}"
-    echo -e "  内存阈值：${BOLD}${MON_MEM_WARN}%${NC}"
-    echo -e "  负载阈值：${BOLD}${MON_LOAD_WARN:-自动}${NC}"
-    monitor_traffic_ensure_baseline
-    monitor_traffic_cycle_ensure_baseline
-    local TODAY_TEXT CYCLE_TEXT
-    TODAY_TEXT=$(monitor_traffic_usage_text daily)
-    CYCLE_TEXT=$(monitor_traffic_usage_text cycle)
-    echo -e "  流量监控：${BOLD}$([ "$MON_TRAFFIC_ENABLED" = yes ] && echo "${MON_TRAFFIC_LIMIT_GB} GB/日" || echo '未启用')${NC}"
-    echo -e "  今日流量：${TODAY_TEXT}"
-    echo -e "  当前周期：${CYCLE_TEXT}"
-    echo -e "  重置日：${BOLD}${MON_TRAFFIC_RESET_DAY}${NC}   周期起点：${BOLD}${MON_TRAFFIC_CYCLE_BASELINE_DATE:-未设置}${NC}"
-    echo -e "  续费提醒：${BOLD}$([ "$MON_RENEW_ENABLED" = yes ] && echo "${MON_RENEW_MODE} · ${MON_RENEW_NEXT_DATE:-未设置}" || echo '未启用')${NC}"
-    echo -e "  每日日报：${BOLD}$([ "$MON_DAILY_REPORT_ENABLED" = yes ] && echo "${MON_DAILY_REPORT_TIME}" || echo '未启用')${NC}"
-    echo -e "  告警冷却：${BOLD}${MON_ALERT_COOLDOWN_MIN:-30} 分钟${NC}"
-    echo -e "  静默时段：${BOLD}${MON_ALERT_SILENCE_START:-未设} - ${MON_ALERT_SILENCE_END:-未设}${NC}"
-    echo -e "  主机显示：${BOLD}${MON_HOST_LABEL:-自动使用 hostname}${NC}"
-    echo -e "  通知：${BOLD}$([ -n "$MON_BOT_TOKEN" ] && echo '已配置' || echo '未配置')${NC}"
-    echo ""
-    menu_div
-    menu_item "1" "设置资源告警阈值" "$YELLOW"
-    menu_item "2" "流量监控与周期" "$CYAN"
-    menu_item "3" "每日日报设置" "$GREEN"
-    menu_item "4" "续费提醒设置" "$GREEN"
-    menu_item "5" "主机显示名称" "$YELLOW"
-    menu_item "6" "发送测试告警" "$CYAN"
-    menu_item "7" "高级告警策略" "$GREEN"
-    menu_item "8" "最近告警记录" "$CYAN"
-    menu_item "9" "启用定时告警" "$GREEN"
-    menu_item "10" "关闭定时告警" "$RED"
-    menu_item "0" "返回上级" "$RED"
-    menu_div; echo ""
-    read -rp "$(ui_prompt '选择操作 [0-10]: ')" CH
-    case "$CH" in
-        1)
-            read -rp "$(ui_prompt "磁盘阈值 [${MON_DISK_WARN}%]: ")" DISK_WARN_IN
-            read -rp "$(ui_prompt "内存阈值 [${MON_MEM_WARN}%]: ")" MEM_WARN_IN
-            read -rp "$(ui_prompt "负载阈值（空=自动） [${MON_LOAD_WARN:-自动}]: ")" LOAD_WARN_IN
-            [ -n "$DISK_WARN_IN" ] && MON_DISK_WARN="$DISK_WARN_IN"
-            [ -n "$MEM_WARN_IN" ] && MON_MEM_WARN="$MEM_WARN_IN"
-            [ -n "$LOAD_WARN_IN" ] && MON_LOAD_WARN="$LOAD_WARN_IN"
-            monitor_alert_save_cfg
-            info "阈值已保存"
-            ;;
-        2)
-            while true; do
-                print_header "流量监控"
-                echo -e "  状态：${BOLD}$([ "$MON_TRAFFIC_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
-                echo -e "  阈值：${BOLD}${MON_TRAFFIC_LIMIT_GB} GB / 日${NC}"
-                monitor_traffic_ensure_baseline
-                monitor_traffic_cycle_ensure_baseline
-                local TODAY_TEXT CYCLE_TEXT CYCLE_RX_BYTES CYCLE_TX_BYTES CYCLE_RX_GB CYCLE_TX_GB
-                TODAY_TEXT=$(monitor_traffic_usage_text daily)
-                CYCLE_TEXT=$(monitor_traffic_usage_text cycle)
-                read -r CYCLE_RX_BYTES CYCLE_TX_BYTES _ <<EOF
+    while true; do
+        print_header "监控告警配置"
+        echo -e "  状态：${BOLD}$([ "$MON_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
+        echo -e "  磁盘阈值：${BOLD}${MON_DISK_WARN}%${NC}"
+        echo -e "  内存阈值：${BOLD}${MON_MEM_WARN}%${NC}"
+        echo -e "  负载阈值：${BOLD}${MON_LOAD_WARN:-自动}${NC}"
+        monitor_traffic_ensure_baseline
+        monitor_traffic_cycle_ensure_baseline
+        local TODAY_TEXT CYCLE_TEXT
+        TODAY_TEXT=$(monitor_traffic_usage_text daily)
+        CYCLE_TEXT=$(monitor_traffic_usage_text cycle)
+        echo -e "  流量监控：${BOLD}$([ "$MON_TRAFFIC_ENABLED" = yes ] && echo "${MON_TRAFFIC_LIMIT_GB} GB/日" || echo '未启用')${NC}"
+        echo -e "  今日流量：${TODAY_TEXT}"
+        echo -e "  当前周期：${CYCLE_TEXT}"
+        echo -e "  重置日：${BOLD}${MON_TRAFFIC_RESET_DAY}${NC}   周期起点：${BOLD}${MON_TRAFFIC_CYCLE_BASELINE_DATE:-未设置}${NC}"
+        echo -e "  续费提醒：${BOLD}$([ "$MON_RENEW_ENABLED" = yes ] && echo "${MON_RENEW_MODE} · ${MON_RENEW_NEXT_DATE:-未设置}" || echo '未启用')${NC}"
+        echo -e "  每日日报：${BOLD}$([ "$MON_DAILY_REPORT_ENABLED" = yes ] && echo "${MON_DAILY_REPORT_TIME}" || echo '未启用')${NC}"
+        echo -e "  告警冷却：${BOLD}${MON_ALERT_COOLDOWN_MIN:-30} 分钟${NC}"
+        echo -e "  静默时段：${BOLD}${MON_ALERT_SILENCE_START:-未设} - ${MON_ALERT_SILENCE_END:-未设}${NC}"
+        echo -e "  主机显示：${BOLD}${MON_HOST_LABEL:-自动使用 hostname}${NC}"
+        echo -e "  通知：${BOLD}$([ -n "$MON_BOT_TOKEN" ] && echo '已配置' || echo '未配置')${NC}"
+        echo ""
+        menu_div
+        menu_item "1" "设置资源告警阈值" "$YELLOW"
+        menu_item "2" "流量监控与周期" "$CYAN"
+        menu_item "3" "每日日报设置" "$GREEN"
+        menu_item "4" "续费提醒设置" "$GREEN"
+        menu_item "5" "主机显示名称" "$YELLOW"
+        menu_item "6" "发送测试告警" "$CYAN"
+        menu_item "7" "高级告警策略" "$GREEN"
+        menu_item "8" "最近告警记录" "$CYAN"
+        menu_item "9" "启用定时告警" "$GREEN"
+        menu_item "10" "关闭定时告警" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+        menu_div; echo ""
+        menu_read CH '选择操作 [0-10]: ' || return 0
+        case "$CH" in
+            1)
+                read -rp "$(ui_prompt "磁盘阈值 [${MON_DISK_WARN}%]: ")" DISK_WARN_IN
+                read -rp "$(ui_prompt "内存阈值 [${MON_MEM_WARN}%]: ")" MEM_WARN_IN
+                read -rp "$(ui_prompt "负载阈值（空=自动） [${MON_LOAD_WARN:-自动}]: ")" LOAD_WARN_IN
+                [ -n "$DISK_WARN_IN" ] && MON_DISK_WARN="$DISK_WARN_IN"
+                [ -n "$MEM_WARN_IN" ] && MON_MEM_WARN="$MEM_WARN_IN"
+                [ -n "$LOAD_WARN_IN" ] && MON_LOAD_WARN="$LOAD_WARN_IN"
+                monitor_alert_save_cfg
+                info "阈值已保存"
+                ;;
+            2)
+                while true; do
+                    print_header "流量监控"
+                    echo -e "  状态：${BOLD}$([ "$MON_TRAFFIC_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
+                    echo -e "  阈值：${BOLD}${MON_TRAFFIC_LIMIT_GB} GB / 日${NC}"
+                    monitor_traffic_ensure_baseline
+                    monitor_traffic_cycle_ensure_baseline
+                    local TODAY_TEXT CYCLE_TEXT CYCLE_RX_BYTES CYCLE_TX_BYTES CYCLE_RX_GB CYCLE_TX_GB
+                    TODAY_TEXT=$(monitor_traffic_usage_text daily)
+                    CYCLE_TEXT=$(monitor_traffic_usage_text cycle)
+                    read -r CYCLE_RX_BYTES CYCLE_TX_BYTES _ <<EOF
 $(monitor_traffic_usage_triplet cycle)
 EOF
-                CYCLE_RX_GB=$(monitor_traffic_used_gb "$CYCLE_RX_BYTES")
-                CYCLE_TX_GB=$(monitor_traffic_used_gb "$CYCLE_TX_BYTES")
-                echo -e "  今日累计：${TODAY_TEXT}"
-                echo -e "  当前周期：${CYCLE_TEXT}"
-                echo -e "  基线日期：${DIM}${MON_TRAFFIC_BASELINE_DATE:-未设置}${NC}"
-                echo -e "  重置日：${DIM}${MON_TRAFFIC_RESET_DAY}${NC}   周期起点：${DIM}${MON_TRAFFIC_CYCLE_BASELINE_DATE:-未设置}${NC}"
-                menu_div
-                menu_item "1" "设置阈值" "$GREEN"
-                menu_item "2" "$([ "$MON_TRAFFIC_ENABLED" = yes ] && echo '关闭流量监控' || echo '启用流量监控')" "$YELLOW"
-                menu_item "3" "重置今日基线" "$CYAN"
-                menu_item "4" "设置重置日" "$GREEN"
-                menu_item "5" "校准周期下行 / 上行流量" "$YELLOW"
-                menu_item "0" "返回上级" "$RED"
-                menu_div; echo ""
-                read -rp "$(ui_prompt '选择操作 [0-5]: ')" TCH
-                case "$TCH" in
-                    1)
-                        read -rp "$(ui_prompt "流量阈值（GB/日，默认 50） [${MON_TRAFFIC_LIMIT_GB}]: ")" LIMIT_IN
-                        [ -n "$LIMIT_IN" ] && MON_TRAFFIC_LIMIT_GB="$LIMIT_IN"
-                        monitor_alert_save_cfg
-                        info "阈值已保存"
-                        ;;
-                    2)
-                        if [ "$MON_TRAFFIC_ENABLED" = yes ]; then
-                            MON_TRAFFIC_ENABLED=no
-                            info "流量监控已关闭"
-                        else
-                            monitor_traffic_enable_with_prompt
-                        fi
-                        monitor_alert_save_cfg
-                        ;;
-                    3)
-                        local CUR_RX CUR_TX CUR_TOTAL
-                        read -r CUR_RX CUR_TX CUR_TOTAL <<EOF
+                    CYCLE_RX_GB=$(monitor_traffic_used_gb "$CYCLE_RX_BYTES")
+                    CYCLE_TX_GB=$(monitor_traffic_used_gb "$CYCLE_TX_BYTES")
+                    echo -e "  今日累计：${TODAY_TEXT}"
+                    echo -e "  当前周期：${CYCLE_TEXT}"
+                    echo -e "  基线日期：${DIM}${MON_TRAFFIC_BASELINE_DATE:-未设置}${NC}"
+                    echo -e "  重置日：${DIM}${MON_TRAFFIC_RESET_DAY}${NC}   周期起点：${DIM}${MON_TRAFFIC_CYCLE_BASELINE_DATE:-未设置}${NC}"
+                    menu_div
+                    menu_item "1" "设置阈值" "$GREEN"
+                    menu_item "2" "$([ "$MON_TRAFFIC_ENABLED" = yes ] && echo '关闭流量监控' || echo '启用流量监控')" "$YELLOW"
+                    menu_item "3" "重置今日基线" "$CYAN"
+                    menu_item "4" "设置重置日" "$GREEN"
+                    menu_item "5" "校准周期下行 / 上行流量" "$YELLOW"
+                    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+                    menu_div; echo ""
+                    menu_read TCH '选择操作 [0-5]: ' || return 0
+                    case "$TCH" in
+                        1)
+                            read -rp "$(ui_prompt "流量阈值（GB/日，默认 50） [${MON_TRAFFIC_LIMIT_GB}]: ")" LIMIT_IN
+                            [ -n "$LIMIT_IN" ] && MON_TRAFFIC_LIMIT_GB="$LIMIT_IN"
+                            monitor_alert_save_cfg
+                            info "阈值已保存"
+                            ;;
+                        2)
+                            if [ "$MON_TRAFFIC_ENABLED" = yes ]; then
+                                MON_TRAFFIC_ENABLED=no
+                                info "流量监控已关闭"
+                            else
+                                monitor_traffic_enable_with_prompt
+                            fi
+                            monitor_alert_save_cfg
+                            ;;
+                        3)
+                            local CUR_RX CUR_TX CUR_TOTAL
+                            read -r CUR_RX CUR_TX CUR_TOTAL <<EOF
 $(monitor_traffic_totals)
 EOF
-                        MON_TRAFFIC_BASELINE_DATE=$(date +%F)
-                        MON_TRAFFIC_BASELINE_BYTES="$CUR_TOTAL"
-                        MON_TRAFFIC_BASELINE_RX_BYTES="$CUR_RX"
-                        MON_TRAFFIC_BASELINE_TX_BYTES="$CUR_TX"
-                        MON_TRAFFIC_OFFSET_BYTES=0
-                        MON_TRAFFIC_OFFSET_RX_BYTES=0
-                        MON_TRAFFIC_OFFSET_TX_BYTES=0
-                        MON_TRAFFIC_LAST_BYTES="$CUR_TOTAL"
-                        MON_TRAFFIC_LAST_RX_BYTES="$CUR_RX"
-                        MON_TRAFFIC_LAST_TX_BYTES="$CUR_TX"
-                        monitor_alert_save_cfg
-                        info "今日基线已重置"
-                        ;;
-                    4)
-                        read -rp "$(ui_prompt "每月流量重置日（1-31，短月顺延下月1日） [${MON_TRAFFIC_RESET_DAY}]: ")" RESET_IN
-                        if [ -n "$RESET_IN" ]; then
-                            monitor_traffic_reset_day_valid "$RESET_IN" || { warn "重置日必须是 1-31；例如 31 遇到 2 月会顺延到 3 月 1 日"; continue; }
-                            MON_TRAFFIC_RESET_DAY="$RESET_IN"
-                        fi
-                        local CUR_RX CUR_TX CUR_TOTAL
-                        read -r CUR_RX CUR_TX CUR_TOTAL <<EOF
+                            MON_TRAFFIC_BASELINE_DATE=$(date +%F)
+                            MON_TRAFFIC_BASELINE_BYTES="$CUR_TOTAL"
+                            MON_TRAFFIC_BASELINE_RX_BYTES="$CUR_RX"
+                            MON_TRAFFIC_BASELINE_TX_BYTES="$CUR_TX"
+                            MON_TRAFFIC_OFFSET_BYTES=0
+                            MON_TRAFFIC_OFFSET_RX_BYTES=0
+                            MON_TRAFFIC_OFFSET_TX_BYTES=0
+                            MON_TRAFFIC_LAST_BYTES="$CUR_TOTAL"
+                            MON_TRAFFIC_LAST_RX_BYTES="$CUR_RX"
+                            MON_TRAFFIC_LAST_TX_BYTES="$CUR_TX"
+                            monitor_alert_save_cfg
+                            info "今日基线已重置"
+                            ;;
+                        4)
+                            read -rp "$(ui_prompt "每月流量重置日（1-31，短月顺延下月1日） [${MON_TRAFFIC_RESET_DAY}]: ")" RESET_IN
+                            if [ -n "$RESET_IN" ]; then
+                                monitor_traffic_reset_day_valid "$RESET_IN" || { warn "重置日必须是 1-31；例如 31 遇到 2 月会顺延到 3 月 1 日"; continue; }
+                                MON_TRAFFIC_RESET_DAY="$RESET_IN"
+                            fi
+                            local CUR_RX CUR_TX CUR_TOTAL
+                            read -r CUR_RX CUR_TX CUR_TOTAL <<EOF
 $(monitor_traffic_totals)
 EOF
-                        MON_TRAFFIC_CYCLE_BASELINE_DATE=$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$(date +%F)")
-                        MON_TRAFFIC_CYCLE_BASELINE_BYTES="$CUR_TOTAL"
-                        MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES="$CUR_RX"
-                        MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES="$CUR_TX"
-                        MON_TRAFFIC_CYCLE_OFFSET_BYTES=0
-                        MON_TRAFFIC_CYCLE_OFFSET_RX_BYTES=0
-                        MON_TRAFFIC_CYCLE_OFFSET_TX_BYTES=0
-                        MON_TRAFFIC_LAST_BYTES="$CUR_TOTAL"
-                        MON_TRAFFIC_LAST_RX_BYTES="$CUR_RX"
-                        MON_TRAFFIC_LAST_TX_BYTES="$CUR_TX"
-                        monitor_alert_save_cfg
-                        info "重置日已保存"
-                        ;;
-                    5)
-                        local CYCLE_RX_IN CYCLE_TX_IN
-                        read -rp "$(ui_prompt "当前周期下行已消耗（GB） [${CYCLE_RX_GB}]: ")" CYCLE_RX_IN
-                        read -rp "$(ui_prompt "当前周期上行已消耗（GB） [${CYCLE_TX_GB}]: ")" CYCLE_TX_IN
-                        CYCLE_RX_IN=${CYCLE_RX_IN:-$CYCLE_RX_GB}
-                        CYCLE_TX_IN=${CYCLE_TX_IN:-$CYCLE_TX_GB}
-                        monitor_traffic_set_cycle_usage_split_gb "$CYCLE_RX_IN" "$CYCLE_TX_IN" || { warn "输入无效"; continue; }
-                        info "当前周期流量已更新"
-                        ;;
-                    0) break ;;
-                    *) warn "无效选项"; sleep 1 ;;
-                esac
-            done
-            ;;
-        3)
-            while true; do
-                print_header "每日日报"
-                echo -e "  状态：${BOLD}$([ "$MON_DAILY_REPORT_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
-                echo -e "  时间：${BOLD}${MON_DAILY_REPORT_TIME}${NC}"
-                echo -e "  今日流量：$(monitor_traffic_usage_text daily)"
-                echo -e "  当前周期：$(monitor_traffic_usage_text cycle)"
-                menu_div
-                menu_item "1" "启用 / 更新日报" "$GREEN"
-                menu_item "2" "关闭每日日报" "$YELLOW"
-                menu_item "3" "设置日报时间" "$CYAN"
-                menu_item "4" "立即发送日报" "$GREEN"
-                menu_item "0" "返回上级" "$RED"
-                menu_div; echo ""
-                read -rp "$(ui_prompt '选择操作 [0-4]: ')" DCH
-                case "$DCH" in
-                    1)
-                        MON_DAILY_REPORT_ENABLED=yes
-                        [ -z "${MON_DAILY_REPORT_TIME:-}" ] && MON_DAILY_REPORT_TIME="08:00"
-                        monitor_alert_save_cfg
-                        MON_ENABLED=yes
-                        monitor_alert_save_cfg
-                        monitor_alert_install_cron
-                        info "每日日报已启用"
-                        ;;
-                    2)
-                        MON_DAILY_REPORT_ENABLED=no
-                        monitor_alert_save_cfg
-                        if [ "$MON_ENABLED" = yes ]; then
+                            MON_TRAFFIC_CYCLE_BASELINE_DATE=$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$(date +%F)")
+                            MON_TRAFFIC_CYCLE_BASELINE_BYTES="$CUR_TOTAL"
+                            MON_TRAFFIC_CYCLE_BASELINE_RX_BYTES="$CUR_RX"
+                            MON_TRAFFIC_CYCLE_BASELINE_TX_BYTES="$CUR_TX"
+                            MON_TRAFFIC_CYCLE_OFFSET_BYTES=0
+                            MON_TRAFFIC_CYCLE_OFFSET_RX_BYTES=0
+                            MON_TRAFFIC_CYCLE_OFFSET_TX_BYTES=0
+                            MON_TRAFFIC_LAST_BYTES="$CUR_TOTAL"
+                            MON_TRAFFIC_LAST_RX_BYTES="$CUR_RX"
+                            MON_TRAFFIC_LAST_TX_BYTES="$CUR_TX"
+                            monitor_alert_save_cfg
+                            info "重置日已保存"
+                            ;;
+                        5)
+                            local CYCLE_RX_IN CYCLE_TX_IN
+                            read -rp "$(ui_prompt "当前周期下行已消耗（GB） [${CYCLE_RX_GB}]: ")" CYCLE_RX_IN
+                            read -rp "$(ui_prompt "当前周期上行已消耗（GB） [${CYCLE_TX_GB}]: ")" CYCLE_TX_IN
+                            CYCLE_RX_IN=${CYCLE_RX_IN:-$CYCLE_RX_GB}
+                            CYCLE_TX_IN=${CYCLE_TX_IN:-$CYCLE_TX_GB}
+                            monitor_traffic_set_cycle_usage_split_gb "$CYCLE_RX_IN" "$CYCLE_TX_IN" || { warn "输入无效"; continue; }
+                            info "当前周期流量已更新"
+                            ;;
+                        0) break ;;
+                        *) warn "无效选项"; sleep 1 ;;
+                    esac
+                done
+                ;;
+            3)
+                while true; do
+                    print_header "每日日报"
+                    echo -e "  状态：${BOLD}$([ "$MON_DAILY_REPORT_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
+                    echo -e "  时间：${BOLD}${MON_DAILY_REPORT_TIME}${NC}"
+                    echo -e "  今日流量：$(monitor_traffic_usage_text daily)"
+                    echo -e "  当前周期：$(monitor_traffic_usage_text cycle)"
+                    menu_div
+                    menu_item "1" "启用 / 更新日报" "$GREEN"
+                    menu_item "2" "关闭每日日报" "$YELLOW"
+                    menu_item "3" "设置日报时间" "$CYAN"
+                    menu_item "4" "立即发送日报" "$GREEN"
+                    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+                    menu_div; echo ""
+                    menu_read DCH '选择操作 [0-4]: ' || return 0
+                    case "$DCH" in
+                        1)
+                            MON_DAILY_REPORT_ENABLED=yes
+                            [ -z "${MON_DAILY_REPORT_TIME:-}" ] && MON_DAILY_REPORT_TIME="08:00"
+                            monitor_alert_save_cfg
+                            MON_ENABLED=yes
+                            monitor_alert_save_cfg
                             monitor_alert_install_cron
-                        else
-                            monitor_alert_remove_cron
-                        fi
-                        info "每日日报已关闭"
-                        ;;
-                    3)
-                        local NORMAL_TIME
-                        read -rp "$(ui_prompt "日报时间（支持 23:59 / 2359） [${MON_DAILY_REPORT_TIME}]: ")" TIME_IN
-                        if [ -n "$TIME_IN" ]; then
-                            NORMAL_TIME=$(monitor_time_normalize "$TIME_IN" 2>/dev/null || true)
-                            [ -n "$NORMAL_TIME" ] || { warn "时间格式无效"; continue; }
-                            MON_DAILY_REPORT_TIME="$NORMAL_TIME"
-                        fi
-                        monitor_alert_save_cfg
-                        [ "$MON_ENABLED" = yes ] && monitor_alert_install_cron
-                        info "日报时间已保存"
-                        ;;
-                    4)
-                        monitor_alert_daily_report
-                        info "日报已发送（如已配置 Telegram）"
-                        ;;
-                    0) break ;;
-                    *) warn "无效选项"; sleep 1 ;;
-                esac
-            done
-            ;;
-        4)
-            while true; do
-                print_header "续费提醒"
-                echo -e "  状态：${BOLD}$([ "$MON_RENEW_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
-                echo -e "  模式：${BOLD}${MON_RENEW_MODE}${NC}"
-                echo -e "  下次续费：${BOLD}${MON_RENEW_NEXT_DATE:-未设置}${NC}"
-                echo -e "  提前提醒：${BOLD}${MON_RENEW_NOTICE_DAYS}${NC}"
-                case "${MON_RENEW_MODE:-interval}" in
-                    interval)
-                        echo -e "  周期：${BOLD}${MON_RENEW_INTERVAL_DAYS} 天${NC}"
-                        ;;
-                    monthly)
-                        echo -e "  每月固定日：${BOLD}${MON_RENEW_MONTH_DAY}${NC}"
-                        ;;
-                    manual)
-                        echo -e "  类型：${BOLD}固定日期一次性提醒${NC}"
-                        ;;
-                esac
-                menu_div
-                menu_item "1" "设置固定日期" "$GREEN"
-                menu_item "2" "按周期循环（30/90/365）" "$YELLOW"
-                menu_item "3" "按每月固定日" "$CYAN"
-                menu_item "4" "设置提醒天数" "$GREEN"
-                menu_item "5" "关闭续费提醒" "$RED"
-                menu_item "0" "返回上级" "$RED"
-                menu_div; echo ""
-                read -rp "$(ui_prompt '选择操作 [0-5]: ')" RCH
-                case "$RCH" in
-                    1)
-                        local NORMAL_DATE
-                        read -rp "$(ui_prompt '请输入下次续费日期（支持 2026-05-15 / 20260515）: ')" NEXT_IN
-                        NORMAL_DATE=$(monitor_date_normalize "$NEXT_IN" 2>/dev/null || true)
-                        [ -n "$NORMAL_DATE" ] || { warn "日期格式无效"; continue; }
-                        MON_RENEW_ENABLED=yes
-                        MON_RENEW_MODE=manual
-                        MON_RENEW_NEXT_DATE="$NORMAL_DATE"
-                        monitor_alert_save_cfg
-                        info "续费日期已设置"
-                        ;;
-                    2)
-                        read -rp "$(ui_prompt '循环天数（如 30/90/365）: ')" DAYS_IN
-                        echo "$DAYS_IN" | grep -qE '^[0-9]+$' || { warn "输入无效"; continue; }
-                        local NORMAL_BASE_DATE
-                        read -rp "$(ui_prompt '下次续费日期（支持 2026-05-15 / 20260515，留空=今天起算）: ')" BASE_IN
-                        BASE_IN=${BASE_IN:-$(date +%F)}
-                        NORMAL_BASE_DATE=$(monitor_date_normalize "$BASE_IN" 2>/dev/null || true)
-                        [ -n "$NORMAL_BASE_DATE" ] || { warn "日期格式无效"; continue; }
-                        MON_RENEW_ENABLED=yes
-                        MON_RENEW_MODE=interval
-                        MON_RENEW_INTERVAL_DAYS="$DAYS_IN"
-                        MON_RENEW_NEXT_DATE=$(monitor_renew_next_date interval "$NORMAL_BASE_DATE" "$DAYS_IN" "$MON_RENEW_MONTH_DAY")
-                        monitor_alert_save_cfg
-                        info "循环续费已设置"
-                        ;;
-                    3)
-                        read -rp "$(ui_prompt '每月固定日（1-28/31）: ')" MDAY
-                        echo "$MDAY" | grep -qE '^[0-9]+$' || { warn "输入无效"; continue; }
-                        MON_RENEW_ENABLED=yes
-                        MON_RENEW_MODE=monthly
-                        MON_RENEW_MONTH_DAY="$MDAY"
-                        MON_RENEW_NEXT_DATE=$(monitor_renew_next_date monthly "$(date +%F)" "${MON_RENEW_INTERVAL_DAYS:-365}" "$MDAY")
-                        monitor_alert_save_cfg
-                        info "每月续费提醒已设置"
-                        ;;
-                    4)
-                        read -rp "$(ui_prompt '提醒天数（逗号分隔，如 30,7,3,1）: ')" NOTICE_IN
-                        [ -n "$NOTICE_IN" ] && MON_RENEW_NOTICE_DAYS="$NOTICE_IN"
-                        monitor_alert_save_cfg
-                        info "提醒天数已保存"
-                        ;;
-                    5)
-                        MON_RENEW_ENABLED=no
-                        monitor_alert_save_cfg
-                        info "续费提醒已关闭"
-                        ;;
-                    0) break ;;
-                    *) warn "无效选项"; sleep 1 ;;
-                esac
-            done
-            ;;
-        5)
-            monitor_alert_set_host_label
-            ;;
-        6)
-            monitor_alert_test_snapshot
-            info "测试消息已发送（如已配置 Telegram）"
-            ;;
-        7)
-            while true; do
-                print_header "高级告警策略"
-                echo -e "  冷却时间：${BOLD}${MON_ALERT_COOLDOWN_MIN:-30} 分钟${NC}"
-                echo -e "  静默时段：${BOLD}${MON_ALERT_SILENCE_START:-未设} - ${MON_ALERT_SILENCE_END:-未设}${NC}"
-                echo -e "  恢复通知：${BOLD}$([ "${MON_RECOVERY_ENABLED:-yes}" = yes ] && echo '已启用' || echo '未启用')${NC}"
-                echo -e "  检查项：SSH=$([ "${MON_CHECK_SSH:-yes}" = yes ] && echo 启用 || echo 关闭) / Fail2ban=$([ "${MON_CHECK_FAIL2BAN:-yes}" = yes ] && echo 启用 || echo 关闭) / Docker=$([ "${MON_CHECK_DOCKER:-yes}" = yes ] && echo 启用 || echo 关闭) / Caddy=$([ "${MON_CHECK_CADDY:-yes}" = yes ] && echo 启用 || echo 关闭)"
-                menu_div
-                menu_item "1" "设置告警冷却" "$GREEN"
-                menu_item "2" "设置静默时段" "$YELLOW"
-                menu_item "3" "切换恢复通知" "$CYAN"
-                menu_item "4" "切换 SSH 检查" "$GREEN"
-                menu_item "5" "切换 Fail2ban 检查" "$GREEN"
-                menu_item "6" "切换 Docker 检查" "$GREEN"
-                menu_item "7" "切换 Caddy 检查" "$GREEN"
-                menu_item "0" "返回上级" "$RED"
-                menu_div; echo ""
-                read -rp "$(ui_prompt '选择操作 [0-7]: ')" ACH
-                case "$ACH" in
-                    1)
-                        read -rp "$(ui_prompt "告警冷却时间（分钟） [${MON_ALERT_COOLDOWN_MIN:-30}]: ")" COOLDOWN_IN
-                        [ -n "$COOLDOWN_IN" ] && MON_ALERT_COOLDOWN_MIN="$COOLDOWN_IN"
-                        monitor_alert_save_cfg
-                        info "告警冷却已保存"
-                        ;;
-                    2)
-                        read -rp "$(ui_prompt "静默开始时间（支持 23:59 / 2359，留空=取消） [${MON_ALERT_SILENCE_START:-未设}]: ")" SILENCE_START_IN
-                        read -rp "$(ui_prompt "静默结束时间（支持 23:59 / 2359，留空=取消） [${MON_ALERT_SILENCE_END:-未设}]: ")" SILENCE_END_IN
-                        if [ -z "$SILENCE_START_IN" ] || [ -z "$SILENCE_END_IN" ]; then
-                            MON_ALERT_SILENCE_START=
-                            MON_ALERT_SILENCE_END=
-                        else
-                            MON_ALERT_SILENCE_START=$(monitor_time_normalize "$SILENCE_START_IN" 2>/dev/null || true)
-                            MON_ALERT_SILENCE_END=$(monitor_time_normalize "$SILENCE_END_IN" 2>/dev/null || true)
-                            [ -n "$MON_ALERT_SILENCE_START" ] && [ -n "$MON_ALERT_SILENCE_END" ] || { warn "时间格式无效"; continue; }
-                        fi
-                        monitor_alert_save_cfg
-                        info "静默时段已保存"
-                        ;;
-                    3)
-                        case "${MON_RECOVERY_ENABLED:-yes}" in
-                            yes) MON_RECOVERY_ENABLED=no ;;
-                            *) MON_RECOVERY_ENABLED=yes ;;
-                        esac
-                        monitor_alert_save_cfg
-                        info "恢复通知已切换"
-                        ;;
-                    4)
-                        case "${MON_CHECK_SSH:-yes}" in
-                            yes) MON_CHECK_SSH=no ;;
-                            *) MON_CHECK_SSH=yes ;;
-                        esac
-                        monitor_alert_save_cfg
-                        info "SSH 检查已切换"
-                        ;;
-                    5)
-                        case "${MON_CHECK_FAIL2BAN:-yes}" in
-                            yes) MON_CHECK_FAIL2BAN=no ;;
-                            *) MON_CHECK_FAIL2BAN=yes ;;
-                        esac
-                        monitor_alert_save_cfg
-                        info "Fail2ban 检查已切换"
-                        ;;
-                    6)
-                        case "${MON_CHECK_DOCKER:-yes}" in
-                            yes) MON_CHECK_DOCKER=no ;;
-                            *) MON_CHECK_DOCKER=yes ;;
-                        esac
-                        monitor_alert_save_cfg
-                        info "Docker 检查已切换"
-                        ;;
-                    7)
-                        case "${MON_CHECK_CADDY:-yes}" in
-                            yes) MON_CHECK_CADDY=no ;;
-                            *) MON_CHECK_CADDY=yes ;;
-                        esac
-                        monitor_alert_save_cfg
-                        info "Caddy 检查已切换"
-                        ;;
-                    0) break ;;
-                    *) warn "无效选项"; sleep 1 ;;
-                esac
-            done
-            ;;
-        8)
-            monitor_alert_history_view
-            ui_pause
-            ;;
-        9)
-            MON_ENABLED=yes
-            monitor_alert_save_cfg
-            monitor_alert_install_cron
-            ddns_ensure_cron >/dev/null 2>&1 || true
-            info "已启用定时告警"
-            ;;
-        10)
-            MON_ENABLED=no
-            monitor_alert_save_cfg
-            monitor_alert_remove_cron
-            info "已关闭定时告警"
-            ;;
-        0) return ;;
-        *) warn "无效选项" ;;
-    esac
+                            info "每日日报已启用"
+                            ;;
+                        2)
+                            MON_DAILY_REPORT_ENABLED=no
+                            monitor_alert_save_cfg
+                            if [ "$MON_ENABLED" = yes ]; then
+                                monitor_alert_install_cron
+                            else
+                                monitor_alert_remove_cron
+                            fi
+                            info "每日日报已关闭"
+                            ;;
+                        3)
+                            local NORMAL_TIME
+                            read -rp "$(ui_prompt "日报时间（支持 23:59 / 2359） [${MON_DAILY_REPORT_TIME}]: ")" TIME_IN
+                            if [ -n "$TIME_IN" ]; then
+                                NORMAL_TIME=$(monitor_time_normalize "$TIME_IN" 2>/dev/null || true)
+                                [ -n "$NORMAL_TIME" ] || { warn "时间格式无效"; continue; }
+                                MON_DAILY_REPORT_TIME="$NORMAL_TIME"
+                            fi
+                            monitor_alert_save_cfg
+                            [ "$MON_ENABLED" = yes ] && monitor_alert_install_cron
+                            info "日报时间已保存"
+                            ;;
+                        4)
+                            monitor_alert_daily_report
+                            info "日报已发送（如已配置 Telegram）"
+                            ;;
+                        0) break ;;
+                        *) warn "无效选项"; sleep 1 ;;
+                    esac
+                done
+                ;;
+            4)
+                while true; do
+                    print_header "续费提醒"
+                    echo -e "  状态：${BOLD}$([ "$MON_RENEW_ENABLED" = yes ] && echo '已启用' || echo '未启用')${NC}"
+                    echo -e "  模式：${BOLD}${MON_RENEW_MODE}${NC}"
+                    echo -e "  下次续费：${BOLD}${MON_RENEW_NEXT_DATE:-未设置}${NC}"
+                    echo -e "  提前提醒：${BOLD}${MON_RENEW_NOTICE_DAYS}${NC}"
+                    case "${MON_RENEW_MODE:-interval}" in
+                        interval)
+                            echo -e "  周期：${BOLD}${MON_RENEW_INTERVAL_DAYS} 天${NC}"
+                            ;;
+                        monthly)
+                            echo -e "  每月固定日：${BOLD}${MON_RENEW_MONTH_DAY}${NC}"
+                            ;;
+                        manual)
+                            echo -e "  类型：${BOLD}固定日期一次性提醒${NC}"
+                            ;;
+                    esac
+                    menu_div
+                    menu_item "1" "设置固定日期" "$GREEN"
+                    menu_item "2" "按周期循环（30/90/365）" "$YELLOW"
+                    menu_item "3" "按每月固定日" "$CYAN"
+                    menu_item "4" "设置提醒天数" "$GREEN"
+                    menu_item "5" "关闭续费提醒" "$RED"
+                    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+                    menu_div; echo ""
+                    menu_read RCH '选择操作 [0-5]: ' || return 0
+                    case "$RCH" in
+                        1)
+                            local NORMAL_DATE
+                            read -rp "$(ui_prompt '请输入下次续费日期（支持 2026-05-15 / 20260515）: ')" NEXT_IN
+                            NORMAL_DATE=$(monitor_date_normalize "$NEXT_IN" 2>/dev/null || true)
+                            [ -n "$NORMAL_DATE" ] || { warn "日期格式无效"; continue; }
+                            MON_RENEW_ENABLED=yes
+                            MON_RENEW_MODE=manual
+                            MON_RENEW_NEXT_DATE="$NORMAL_DATE"
+                            monitor_alert_save_cfg
+                            info "续费日期已设置"
+                            ;;
+                        2)
+                            read -rp "$(ui_prompt '循环天数（如 30/90/365）: ')" DAYS_IN
+                            echo "$DAYS_IN" | grep -qE '^[0-9]+$' || { warn "输入无效"; continue; }
+                            local NORMAL_BASE_DATE
+                            read -rp "$(ui_prompt '下次续费日期（支持 2026-05-15 / 20260515，留空=今天起算）: ')" BASE_IN
+                            BASE_IN=${BASE_IN:-$(date +%F)}
+                            NORMAL_BASE_DATE=$(monitor_date_normalize "$BASE_IN" 2>/dev/null || true)
+                            [ -n "$NORMAL_BASE_DATE" ] || { warn "日期格式无效"; continue; }
+                            MON_RENEW_ENABLED=yes
+                            MON_RENEW_MODE=interval
+                            MON_RENEW_INTERVAL_DAYS="$DAYS_IN"
+                            MON_RENEW_NEXT_DATE=$(monitor_renew_next_date interval "$NORMAL_BASE_DATE" "$DAYS_IN" "$MON_RENEW_MONTH_DAY")
+                            monitor_alert_save_cfg
+                            info "循环续费已设置"
+                            ;;
+                        3)
+                            read -rp "$(ui_prompt '每月固定日（1-28/31）: ')" MDAY
+                            echo "$MDAY" | grep -qE '^[0-9]+$' || { warn "输入无效"; continue; }
+                            MON_RENEW_ENABLED=yes
+                            MON_RENEW_MODE=monthly
+                            MON_RENEW_MONTH_DAY="$MDAY"
+                            MON_RENEW_NEXT_DATE=$(monitor_renew_next_date monthly "$(date +%F)" "${MON_RENEW_INTERVAL_DAYS:-365}" "$MDAY")
+                            monitor_alert_save_cfg
+                            info "每月续费提醒已设置"
+                            ;;
+                        4)
+                            read -rp "$(ui_prompt '提醒天数（逗号分隔，如 30,7,3,1）: ')" NOTICE_IN
+                            [ -n "$NOTICE_IN" ] && MON_RENEW_NOTICE_DAYS="$NOTICE_IN"
+                            monitor_alert_save_cfg
+                            info "提醒天数已保存"
+                            ;;
+                        5)
+                            MON_RENEW_ENABLED=no
+                            monitor_alert_save_cfg
+                            info "续费提醒已关闭"
+                            ;;
+                        0) break ;;
+                        *) warn "无效选项"; sleep 1 ;;
+                    esac
+                done
+                ;;
+            5)
+                monitor_alert_set_host_label
+                ;;
+            6)
+                monitor_alert_test_snapshot
+                info "测试消息已发送（如已配置 Telegram）"
+                ;;
+            7)
+                while true; do
+                    print_header "高级告警策略"
+                    echo -e "  冷却时间：${BOLD}${MON_ALERT_COOLDOWN_MIN:-30} 分钟${NC}"
+                    echo -e "  静默时段：${BOLD}${MON_ALERT_SILENCE_START:-未设} - ${MON_ALERT_SILENCE_END:-未设}${NC}"
+                    echo -e "  恢复通知：${BOLD}$([ "${MON_RECOVERY_ENABLED:-yes}" = yes ] && echo '已启用' || echo '未启用')${NC}"
+                    echo -e "  检查项：SSH=$([ "${MON_CHECK_SSH:-yes}" = yes ] && echo 启用 || echo 关闭) / Fail2ban=$([ "${MON_CHECK_FAIL2BAN:-yes}" = yes ] && echo 启用 || echo 关闭) / Docker=$([ "${MON_CHECK_DOCKER:-yes}" = yes ] && echo 启用 || echo 关闭) / Caddy=$([ "${MON_CHECK_CADDY:-yes}" = yes ] && echo 启用 || echo 关闭)"
+                    menu_div
+                    menu_item "1" "设置告警冷却" "$GREEN"
+                    menu_item "2" "设置静默时段" "$YELLOW"
+                    menu_item "3" "切换恢复通知" "$CYAN"
+                    menu_item "4" "切换 SSH 检查" "$GREEN"
+                    menu_item "5" "切换 Fail2ban 检查" "$GREEN"
+                    menu_item "6" "切换 Docker 检查" "$GREEN"
+                    menu_item "7" "切换 Caddy 检查" "$GREEN"
+                    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+                    menu_div; echo ""
+                    menu_read ACH '选择操作 [0-7]: ' || return 0
+                    case "$ACH" in
+                        1)
+                            read -rp "$(ui_prompt "告警冷却时间（分钟） [${MON_ALERT_COOLDOWN_MIN:-30}]: ")" COOLDOWN_IN
+                            [ -n "$COOLDOWN_IN" ] && MON_ALERT_COOLDOWN_MIN="$COOLDOWN_IN"
+                            monitor_alert_save_cfg
+                            info "告警冷却已保存"
+                            ;;
+                        2)
+                            read -rp "$(ui_prompt "静默开始时间（支持 23:59 / 2359，留空=取消） [${MON_ALERT_SILENCE_START:-未设}]: ")" SILENCE_START_IN
+                            read -rp "$(ui_prompt "静默结束时间（支持 23:59 / 2359，留空=取消） [${MON_ALERT_SILENCE_END:-未设}]: ")" SILENCE_END_IN
+                            if [ -z "$SILENCE_START_IN" ] || [ -z "$SILENCE_END_IN" ]; then
+                                MON_ALERT_SILENCE_START=
+                                MON_ALERT_SILENCE_END=
+                            else
+                                MON_ALERT_SILENCE_START=$(monitor_time_normalize "$SILENCE_START_IN" 2>/dev/null || true)
+                                MON_ALERT_SILENCE_END=$(monitor_time_normalize "$SILENCE_END_IN" 2>/dev/null || true)
+                                [ -n "$MON_ALERT_SILENCE_START" ] && [ -n "$MON_ALERT_SILENCE_END" ] || { warn "时间格式无效"; continue; }
+                            fi
+                            monitor_alert_save_cfg
+                            info "静默时段已保存"
+                            ;;
+                        3)
+                            case "${MON_RECOVERY_ENABLED:-yes}" in
+                                yes) MON_RECOVERY_ENABLED=no ;;
+                                *) MON_RECOVERY_ENABLED=yes ;;
+                            esac
+                            monitor_alert_save_cfg
+                            info "恢复通知已切换"
+                            ;;
+                        4)
+                            case "${MON_CHECK_SSH:-yes}" in
+                                yes) MON_CHECK_SSH=no ;;
+                                *) MON_CHECK_SSH=yes ;;
+                            esac
+                            monitor_alert_save_cfg
+                            info "SSH 检查已切换"
+                            ;;
+                        5)
+                            case "${MON_CHECK_FAIL2BAN:-yes}" in
+                                yes) MON_CHECK_FAIL2BAN=no ;;
+                                *) MON_CHECK_FAIL2BAN=yes ;;
+                            esac
+                            monitor_alert_save_cfg
+                            info "Fail2ban 检查已切换"
+                            ;;
+                        6)
+                            case "${MON_CHECK_DOCKER:-yes}" in
+                                yes) MON_CHECK_DOCKER=no ;;
+                                *) MON_CHECK_DOCKER=yes ;;
+                            esac
+                            monitor_alert_save_cfg
+                            info "Docker 检查已切换"
+                            ;;
+                        7)
+                            case "${MON_CHECK_CADDY:-yes}" in
+                                yes) MON_CHECK_CADDY=no ;;
+                                *) MON_CHECK_CADDY=yes ;;
+                            esac
+                            monitor_alert_save_cfg
+                            info "Caddy 检查已切换"
+                            ;;
+                        0) break ;;
+                        *) warn "无效选项"; sleep 1 ;;
+                    esac
+                done
+                ;;
+            8)
+                monitor_alert_history_view
+                ui_pause
+                ;;
+            9)
+                MON_ENABLED=yes
+                monitor_alert_save_cfg
+                monitor_alert_install_cron
+                ddns_ensure_cron >/dev/null 2>&1 || true
+                info "已启用定时告警"
+                ;;
+            10)
+                MON_ENABLED=no
+                monitor_alert_save_cfg
+                monitor_alert_remove_cron
+                info "已关闭定时告警"
+                ;;
+            0) return ;;
+            *) warn "无效选项" ;;
+        esac
+    done
 }
 
 safety_arm() {
@@ -2953,8 +2958,9 @@ login_security_logs() {
         print_header "登录记录与安全日志"
         menu_pair "1" "最近成功登录" "2" "最近失败登录"
         menu_pair "3" "当前在线会话" "4" "SSH 安全日志"
-        menu_pair "5" "Fail2ban 封禁状态" "0" "返回上级" "$GREEN" "$RED"
-        read -rp "$(ui_prompt '选择记录 [0-5]: ')" CH
+        menu_item "5" "Fail2ban 封禁状态" "$GREEN"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+        menu_read CH '选择记录 [0-5]: ' || return 0
         case "$CH" in
             1) last -ai 2>/dev/null | head -30 ;;
             2) if command -v lastb >/dev/null 2>&1; then lastb -ai 2>/dev/null | head -30; else warn "系统没有 lastb 数据"; fi ;;
@@ -3225,8 +3231,9 @@ system_update_manager() {
         menu_div
         menu_pair "1" "刷新并检查更新" "2" "安装安全更新"
         menu_pair "3" "安装全部更新" "4" "自动安全更新" "$YELLOW" "$GREEN"
-        menu_pair "5" "清理软件包缓存" "0" "返回上级" "$GREEN" "$RED"
-        read -rp "$(ui_prompt '选择操作 [0-5]: ')" CH
+        menu_item "5" "清理软件包缓存" "$GREEN"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+        menu_read CH '选择操作 [0-5]: ' || return 0
         case "$CH" in
             1)
                 case "$PM" in
@@ -3314,11 +3321,11 @@ system_toolbox_menu() {
         menu_pair "11" "配置体检中心" "12" "生成诊断包" "$GREEN" "$YELLOW"
         menu_item "13" "修改系统 Hostname" "$CYAN"
         menu_item "14" "STUN / NAT 检测" "$GREEN"
-        menu_item "0" "返回主菜单" "$RED"
+        menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         ui_hint "Hostname 是系统名，会影响 root@主机名 提示符；推送显示名仍在监控通知设置中配置"
         echo ""
-        read -rp "$(ui_prompt '选择工具 [0-14]: ')" CH
+        menu_read CH '选择工具 [0-14]: ' || return 0
         case "$CH" in
             1) security_audit ;;
             2) login_security_logs; continue ;;

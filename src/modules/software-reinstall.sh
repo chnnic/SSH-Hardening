@@ -127,10 +127,14 @@ common_software_menu() {
         menu_item "4" "开发环境  ${DIM}编译工具 / Python / pip${NC}"
         menu_item "5" "全部推荐软件"
         menu_item "6" "安装自定义软件包"
-        menu_item "0" "返回上级" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择分类 [0-6，可多选]: ')" CHOICES
+        menu_read CHOICES '选择分类 [0-6，可多选]: ' || return 0
         [ "$CHOICES" = "0" ] && return
+        # 导航键必须单独输入；避免混选时仍执行前面的安装分类。
+        if printf '%s\n' "$CHOICES" | grep -qE '(^|[[:space:],])(0|00)([[:space:],]|$)'; then
+            warn "0 / 00 请单独输入"; continue
+        fi
         [ "$PM" != "unknown" ] || { error "未识别到支持的包管理器"; ui_pause; return; }
 
         local PACKAGES="" CH GROUP PKG
@@ -224,6 +228,48 @@ reinstall_collect_auth_args() {
     REINSTALL_AUTH_ARGS=(--ssh-port "$SSH_PORT" --password "$PASSWORD")
 }
 
+# 只在第三方工具成功完成准备后调用。返回/退出不撤销已写入的安装引导。
+reinstall_reboot_menu() {
+    local CH CONFIRM
+    while true; do
+        reinstall_bilingual_header "重装准备完成" "Reinstall preparation completed"
+        reinstall_bilingual_warn "下次重启将进入安装环境并清空系统盘，请确认备份和控制台/VNC可用" "The next reboot starts installation and erases the system disk; verify backups and console/VNC access"
+        reinstall_bilingual_hint "稍后重启或退出不会撤销重装准备；如需取消，请先运行 bash /root/reinstall.sh reset" "Returning or exiting does not cancel preparation; to cancel, first run bash /root/reinstall.sh reset"
+        reinstall_menu_item "1" "立即重启系统，开始重装" "Reboot now to start installation" "$RED"
+        reinstall_menu_item "0" "稍后重启，返回上级" "Reboot later and return" "$YELLOW"
+        reinstall_menu_item "00" "退出脚本" "Exit script" "$RED"
+        menu_read CH '选择操作 [0-1 / 00]: ' || return 0
+        case "$CH" in
+            0|"") return 0 ;;
+            1)
+                reinstall_bilingual_warn "重启会断开 SSH。只有输入 REBOOT 才会执行" "Reboot disconnects SSH. Type REBOOT to proceed"
+                read -rp "$(ui_prompt '输入 REBOOT 确认重启（回车取消）: ')" CONFIRM || return 0
+                if [ "$CONFIRM" != REBOOT ]; then
+                    reinstall_bilingual_warn "已取消立即重启；重装准备仍保留" "Immediate reboot cancelled; preparation remains in place"
+                    continue
+                fi
+                audit_action "用户确认重启进入重装环境" DANGER
+                if reinstall_request_reboot; then
+                    reinstall_bilingual_hint "重启请求已提交，SSH 即将断开；请从商家控制台查看安装进度" "Reboot requested; follow installation in the provider console"
+                    return 0
+                fi
+                audit_action "重装后重启请求失败" FAILED
+                reinstall_bilingual_error "重启请求失败，未自动重试；请检查系统服务状态" "Reboot request failed; no automatic retry was attempted"
+                return 1
+                ;;
+            *) reinstall_bilingual_warn "无效选项" "Invalid option" ;;
+        esac
+    done
+}
+
+reinstall_request_reboot() {
+    if systemd_available; then
+        systemctl reboot
+    else
+        reboot
+    fi
+}
+
 reinstall_run_target() {
     local TARGET_LABEL="$1"; shift
     local SCRIPT="/root/reinstall.sh" ROOT_SOURCE ROOT_DISK VIRT ACTION="${1:-}" SSH_PORT
@@ -242,7 +288,7 @@ reinstall_run_target() {
     echo ""
     reinstall_bilingual_error "继续操作将清空整块系统盘，现有系统和所有数据不可恢复" "Continuing will erase the entire system disk; all data will be lost"
     reinstall_bilingual_warn "请先确认商家控制台/VNC可用，并已在异地保存必要备份" "Confirm provider console/VNC access and back up all needed data elsewhere"
-    reinstall_bilingual_hint "执行后 VPS 会重启并进入临时安装环境" "The VPS will reboot into a temporary installer environment"
+    reinstall_bilingual_hint "准备成功后可选择并确认重启，随后进入临时安装环境" "After successful preparation, choose and confirm reboot to enter the installer"
     reinstall_bilingual_hint "可能看到 Reinstalling...、BusyBox 或 ~ #；这些不是新系统" "Reinstalling..., BusyBox, or ~ # may appear; this is not the new system yet"
     echo ""
     echo -e "  ${DIM}Type ERASE-ALL-DATA to confirm${NC}"
@@ -264,7 +310,13 @@ reinstall_run_target() {
     reinstall_bilingual_warn "即将交由官方第三方重装工具执行，请认真阅读其后续输出" "The official third-party reinstall tool will now run; read its output carefully"
     reinstall_bilingual_hint "后续日志由官方工具生成，可能仅显示英文；若停在 ~ #，请查看 /var/log/syslog" "Subsequent logs come from the official tool and may be English; if it stops at ~ #, check /var/log/syslog"
     sleep 2
-    bash "$SCRIPT" "$@" "${REINSTALL_AUTH_ARGS[@]}"
+    if bash "$SCRIPT" "$@" "${REINSTALL_AUTH_ARGS[@]}"; then
+        reinstall_reboot_menu
+    else
+        audit_action "系统重装准备失败：$TARGET_LABEL" FAILED
+        reinstall_bilingual_error "重装工具未成功完成，不提供自动重启；请检查上方错误和当前引导状态" "Preparation failed; reboot was not requested. Check the errors and current boot state"
+        return 1
+    fi
 }
 
 system_reinstall_menu() {
@@ -284,9 +336,10 @@ system_reinstall_menu() {
         reinstall_menu_item "8" "DD 自定义 RAW 镜像" "Custom DD RAW image" "$YELLOW"
         reinstall_menu_item "9" "仅下载 / 更新重装工具" "Download / update reinstall tool"
         reinstall_menu_item "0" "返回上级" "Back to previous menu" "$RED"
+        reinstall_menu_item "00" "退出脚本" "Exit script" "$RED"
         menu_div; echo ""
         echo -e "  ${DIM}Select target system [0-9]${NC}"
-        read -rp "$(ui_prompt '选择目标系统 [0-9]: ')" CH
+        menu_read CH '选择目标系统 [0-9]: ' || return 0
         case "$CH" in
             1) reinstall_run_target "Debian 12" debian 12 ;;
             2) reinstall_run_target "Debian 13" debian 13 ;;
@@ -320,9 +373,10 @@ software_reinstall_menu() {
         reinstall_menu_item "1" "安装常用软件" "Install common software"
         reinstall_menu_item "2" "一键 DD / 系统重装" "One-click DD / System Reinstall" "$RED"
         reinstall_menu_item "0" "返回主菜单" "Back to main menu" "$RED"
+        reinstall_menu_item "00" "退出脚本" "Exit script" "$RED"
         menu_div; echo ""
         echo -e "  ${DIM}Select function [0-2]${NC}"
-        read -rp "$(ui_prompt '选择功能 [0-2]: ')" CH
+        menu_read CH '选择功能 [0-2]: ' || return 0
         case "$CH" in
             1) common_software_menu ;;
             2) system_reinstall_menu ;;

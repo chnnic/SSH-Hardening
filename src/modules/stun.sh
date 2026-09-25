@@ -559,11 +559,11 @@ stun_nat_menu() {
         print_header "STUN / NAT 检测"
         menu_item "1" "快速检测"
         menu_item "2" "自定义 STUN 多端口" "$CYAN"
-        menu_item "0" "返回上级" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
         local CH
-        read -rp "$(ui_prompt '选择操作 [0-2]: ')" CH
+        menu_read CH '选择操作 [0-2]: ' || return 0
         case "$CH" in
             1) stun_nat_quick; ui_pause ;;
             2) stun_nat_custom; ui_pause ;;

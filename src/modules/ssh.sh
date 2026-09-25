@@ -54,7 +54,9 @@ delete_key() {
     fi
 
     menu_div
-    read -rp "  请输入要删除的编号（直接回车取消）: " DEL_NUM
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+    menu_read DEL_NUM "请输入要删除的编号（直接回车取消）: " || return 0
+    [ "$DEL_NUM" = "0" ] && return 0
     [ -z "$DEL_NUM" ] && { warn "已取消。"; return; }
 
     if ! echo "$DEL_NUM" | grep -qE '^[0-9]+$'; then
@@ -96,9 +98,9 @@ generate_key() {
     echo -e "  选择密钥类型："
     menu_item "1" "Ed25519  ${DIM}推荐，更安全更短${NC}"
     menu_item "2" "RSA 4096"
-    menu_item "0" "返回上级" "$RED"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     echo ""
-    read -rp "$(ui_prompt '选择密钥类型 [0-2]: ')" KEY_TYPE_CHOICE
+    menu_read KEY_TYPE_CHOICE '选择密钥类型 [0-2]: ' || return 0
 
     case "$KEY_TYPE_CHOICE" in
         0) return ;;
@@ -189,10 +191,10 @@ set_login_mode() {
     menu_item "1" "仅密钥登录  ${DIM}推荐${NC}"
     menu_item "2" "密码 + 密钥登录"
     menu_item "3" "仅密码登录  ${RED}不推荐${NC}" "$YELLOW"
-    menu_item "0" "返回上级" "$RED"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     menu_div
     echo ""
-    read -rp "$(ui_prompt '选择登录方式 [0-3]: ')" MODE
+    menu_read MODE '选择登录方式 [0-3]: ' || return 0
     echo ""
 
     case "$MODE" in

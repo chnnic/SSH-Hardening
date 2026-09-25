@@ -420,7 +420,9 @@ self_rollback() {
     while IFS= read -r f; do FILES+=("$f"); done < <(find "$VPS_VERSION_DIR" -maxdepth 1 -type f -name '*.sh' 2>/dev/null | sort -r)
     [ "${#FILES[@]}" -gt 0 ] || { warn "暂无可回滚版本"; return; }
     for f in "${FILES[@]}"; do echo -e "  ${GREEN}[$i]${NC} $(basename "$f")"; i=$((i+1)); done
-    read -rp "  选择版本编号（回车取消）: " N
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+    menu_read N "选择版本编号（回车取消）: " || return 0
+    [ "$N" = "0" ] && return 0
     [ -n "$N" ] || return
     echo "$N" | grep -qE '^[0-9]+$' || { warn "编号无效"; return; }
     [ "$N" -ge 1 ] && [ "$N" -le "${#FILES[@]}" ] || { warn "编号无效"; return; }
@@ -553,10 +555,10 @@ self_check_first_run() {
     echo ""
     menu_div
     menu_item "1" "立即安装  ${DIM}推荐${NC}"
-    menu_item "0" "跳过并进入主菜单" "$RED"
+    menu_pair "0" "跳过并进入主菜单" "00" "退出脚本" "$RED" "$RED"
     menu_div
     echo ""
-    read -rp "$(ui_prompt '选择操作 [0-1]: ')" CH
+    menu_read CH '选择操作 [0-1]: ' || return 0
     case "$CH" in
         1)
             self_install
@@ -590,11 +592,11 @@ self_manage_menu() {
         menu_div
         menu_pair "1" "安装并设置快捷键" "2" "更新到最新版"
         menu_pair "3" "卸载本地脚本" "4" "回滚历史版本" "$YELLOW" "$YELLOW"
-        menu_pair "5" "离线安装包" "0" "返回主菜单" "$CYAN" "$RED"
+        menu_item "5" "离线安装包" "$CYAN"
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "$(ui_prompt '选择操作 [0-5]: ')" CH
+        menu_read CH '选择操作 [0-5]: ' || return 0
 
         case "$CH" in
             1) self_install ;;
@@ -606,9 +608,9 @@ self_manage_menu() {
                     print_header "离线安装包"
                     menu_item "1" "生成离线安装包" "$GREEN"
                     menu_item "2" "安装本地离线包" "$YELLOW"
-                    menu_item "0" "返回上级" "$RED"
+                    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
                     menu_div; echo ""
-                    read -rp "$(ui_prompt '选择操作 [0-2]: ')" OCH
+                    menu_read OCH '选择操作 [0-2]: ' || return 0
                     case "$OCH" in
                         1) self_offline_bundle_create; ui_pause ;;
                         2)

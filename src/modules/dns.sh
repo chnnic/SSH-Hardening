@@ -273,7 +273,7 @@ dns_menu() {
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "$(ui_prompt '选择 DNS [0-7]: ')" CH
+        menu_read CH '选择 DNS [0-7]: ' || return 0
 
         case "$CH" in
             1) dns_write "1.1.1.1 1.0.0.1" "2606:4700:4700::1111 2606:4700:4700::1001" "$HAS_V6" ;;

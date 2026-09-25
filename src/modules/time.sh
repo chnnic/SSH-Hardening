@@ -43,7 +43,7 @@ timesync_menu() {
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "$(ui_prompt '选择操作 [0-7]: ')" CH
+        menu_read CH '选择操作 [0-7]: ' || return 0
 
         case "$CH" in
             1) ts_sync_time ;;
@@ -537,10 +537,10 @@ ts_https_schedule_menu() {
         menu_pair "3" "每 6 小时  推荐" "4" "每 12 小时" "$GREEN" "$CYAN"
         menu_pair "5" "每 24 小时" "6" "立即同步"
         menu_item "7" "关闭 HTTPS 自动同步" "$RED"
-        menu_item "0" "返回上级" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "$(ui_prompt '选择操作 [0-7]: ')" CH
+        menu_read CH '选择操作 [0-7]: ' || return 0
         case "$CH" in
             1) ts_https_schedule_enable 1 ;;
             2) ts_https_schedule_enable 3 ;;

@@ -337,10 +337,10 @@ ip_source_switch_family() {
             printf '  %2d) %s\n' "$index" "$addr"
         fi
     done
-    menu_item "0" "返回上级" "$RED"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     menu_div
     echo ""
-    read -rp "$(ui_prompt "选择地址 [0-${#addresses[@]}]: ")" choice
+    menu_read choice "选择地址 [0-${#addresses[@]}]: " || return 0
     [ "$choice" = "0" ] && return 0
     [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#addresses[@]}" ] \
         || { warn "无效选项"; return 1; }
@@ -380,7 +380,7 @@ ip_source_switch_menu() {
         menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "$(ui_prompt '选择操作 [0-2]: ')" CH
+        menu_read CH '选择操作 [0-2]: ' || return 0
         case "$CH" in
             1) ip_source_switch_family 4; ui_pause ;;
             2) ip_source_switch_family 6; ui_pause ;;
@@ -412,7 +412,7 @@ ip_config_menu() {
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "$(ui_prompt '选择操作 [0-6]: ')" CH
+        menu_read CH '选择操作 [0-6]: ' || return 0
 
         case "$CH" in
             1) ip_show_status ;;

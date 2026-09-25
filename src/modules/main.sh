@@ -147,10 +147,10 @@ main_menu() {
         menu_pair "d" "Docker 管理" "m" "脚本管理"
         menu_pair "g" "监控告警中心" "" "" "$CYAN" "$CYAN"
         echo ""
-        menu_item "0" "退出脚本" "$RED"
+        menu_pair "0" "退出脚本" "00" "退出脚本" "$RED" "$RED"
         box_bot
         echo ""
-        read -rp "$(ui_prompt '选择功能 [0-9 / n / t / s / h / a / d / m / g]: ')" CHOICE
+        menu_read CHOICE '选择功能 [0-9 / n / t / s / h / a / d / m / g]: ' || return 0
         audit_action "主菜单选择 $CHOICE" INFO
 
         case "$CHOICE" in

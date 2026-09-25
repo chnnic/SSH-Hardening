@@ -205,7 +205,7 @@ mirror_menu() {
                 menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
                 menu_div
                 echo ""
-                read -rp "$(ui_prompt '选择软件源 [0-5]: ')" CH
+                menu_read CH '选择软件源 [0-5]: ' || return 0
                 case "$CH" in
                     1) mirror_apply_ubuntu "https://mirrors.aliyun.com/ubuntu" ;;
                     2) mirror_apply_ubuntu "https://mirrors.tencent.com/ubuntu" ;;
@@ -227,7 +227,7 @@ mirror_menu() {
                 menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
                 menu_div
                 echo ""
-                read -rp "$(ui_prompt '选择软件源 [0-5]: ')" CH
+                menu_read CH '选择软件源 [0-5]: ' || return 0
                 case "$CH" in
                     1) mirror_apply_debian "https://mirrors.aliyun.com/debian" ;;
                     2) mirror_apply_debian "https://mirrors.tencent.com/debian" ;;
@@ -247,7 +247,7 @@ mirror_menu() {
                 menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
                 menu_div
                 echo ""
-                read -rp "$(ui_prompt '选择软件源 [0-3]: ')" CH
+                menu_read CH '选择软件源 [0-3]: ' || return 0
                 case "$CH" in
                     1) mirror_apply_centos "cn" ;;
                     2) mirror_apply_centos "edu" ;;

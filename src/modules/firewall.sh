@@ -128,7 +128,9 @@ ufw_del_port() {
         echo ""
         menu_div
         echo -e "  ${DIM}输入编号删除，直接回车返回上级${NC}"
-        read -rp "  请输入规则编号: " NUM
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+        menu_read NUM "请输入规则编号: " || return 0
+        [ "$NUM" = "0" ] && return 0
         [ -z "$NUM" ] && return
         if ! echo "$NUM" | grep -qE '^[0-9]+$'; then
             error "无效编号"; sleep 1; continue
@@ -161,7 +163,9 @@ ufw_del_ip() {
         echo ""
         menu_div
         echo -e "  ${DIM}输入编号删除，直接回车返回上级${NC}"
-        read -rp "  请输入规则编号: " NUM
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+        menu_read NUM "请输入规则编号: " || return 0
+        [ "$NUM" = "0" ] && return 0
         [ -z "$NUM" ] && return
         echo "y" | ufw delete "$NUM" 2>/dev/null && info "规则 [$NUM] 已删除 ✓" || error "删除失败"
         sleep 1
@@ -207,7 +211,7 @@ ufw_menu() {
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "$(ui_prompt '选择操作 [0-9 / u]: ')" CH
+        menu_read CH '选择操作 [0-9 / u]: ' || return 0
 
         case "$CH" in 1|3|4|5|6|7|8) safety_arm ufw || continue ;; esac
 
@@ -403,7 +407,7 @@ fwd_menu() {
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "$(ui_prompt '选择操作 [0-9]: ')" CH
+        menu_read CH '选择操作 [0-9]: ' || return 0
 
         case "$CH" in 1|3|4|5|6|7|8) safety_arm firewalld || continue ;; esac
 
@@ -469,7 +473,7 @@ firewall_menu() {
             menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
             menu_div
             echo ""
-            read -rp "$(ui_prompt '选择防火墙 [0-2]: ')" CH
+            menu_read CH '选择防火墙 [0-2]: ' || return 0
             case "$CH" in
                 1) fw_install "ufw";       ui_continue ;;
                 2) fw_install "firewalld"; ui_continue ;;

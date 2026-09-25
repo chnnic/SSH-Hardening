@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.12.9
+# VPS 开荒脚本 V3.12.10
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -16,7 +16,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 ### 离线安装包
 
-适合不能访问 GitHub 的中国内地 VPS。以下下载与当前脚本一致的 **V3.12.9** 离线包。每次脚本版本更新都会一并构建、校验和发布对应离线包，并同步本节的下载链接。
+适合不能访问 GitHub 的中国内地 VPS。以下下载与当前脚本一致的 **V3.12.10** 离线包。每次脚本版本更新都会一并构建、校验和发布对应离线包，并同步本节的下载链接。
 
 **方式一：中国内地 VPS 通过加速链接直接下载**
 
@@ -24,12 +24,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 ```bash
 cd /root
-curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.9/vps-tools-offline-V3.12.9.tar.gz
-curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.9/vps-tools-offline-V3.12.9.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.12.9.tar.gz.sha256
+curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.10/vps-tools-offline-V3.12.10.tar.gz
+curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.10/vps-tools-offline-V3.12.10.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.12.10.tar.gz.sha256
 ```
 
-也可以点击下载：[离线安装包（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.9/vps-tools-offline-V3.12.9.tar.gz) · [SHA256 校验文件（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.9/vps-tools-offline-V3.12.9.tar.gz.sha256)。
+也可以点击下载：[离线安装包（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.10/vps-tools-offline-V3.12.10.tar.gz) · [SHA256 校验文件（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.10/vps-tools-offline-V3.12.10.tar.gz.sha256)。
 
 > 加速服务由第三方提供，可用性取决于当地网络；若不可用，请使用下方直连下载后上传的方式。SHA256 用于完整性核验；包和校验文件都来自同一镜像时，不能独立证明来源可信，安全要求较高时应从 GitHub 或其他可信渠道另行获取校验值。校验失败时不要继续安装。
 
@@ -38,24 +38,24 @@ sha256sum -c vps-tools-offline-V3.12.9.tar.gz.sha256
 先在一台可以访问 GitHub 的电脑或跳板机下载：
 
 ```bash
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.9/vps-tools-offline-V3.12.9.tar.gz
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.9/vps-tools-offline-V3.12.9.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.12.9.tar.gz.sha256
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.10/vps-tools-offline-V3.12.10.tar.gz
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.12.10/vps-tools-offline-V3.12.10.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.12.10.tar.gz.sha256
 ```
 
 再通过 `scp`、SFTP 或 WinSCP 将两个文件传到 VPS。Linux/macOS 示例：
 
 ```bash
-scp vps-tools-offline-V3.12.9.tar.gz* root@你的VPS地址:/root/
+scp vps-tools-offline-V3.12.10.tar.gz* root@你的VPS地址:/root/
 ```
 
 方式一直接下载或方式二上传完成后，确认两个文件都在 VPS 的 `/root` 目录，登录 VPS 后离线安装：
 
 ```bash
 cd /root
-sha256sum -c vps-tools-offline-V3.12.9.tar.gz.sha256
-tar -xzf vps-tools-offline-V3.12.9.tar.gz
-cd vps-tools-offline-V3.12.9
+sha256sum -c vps-tools-offline-V3.12.10.tar.gz.sha256
+tar -xzf vps-tools-offline-V3.12.10.tar.gz
+cd vps-tools-offline-V3.12.10
 bash install.sh
 v
 ```
@@ -154,13 +154,17 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
     h  安全与诊断              a  软件与重装
     d  Docker 管理             m  脚本管理
     g  监控告警中心
-    0  退出脚本
+    0  退出脚本                00  退出脚本
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
 ---
 
 ## 功能详解
+
+菜单导航：各级子菜单统一 `0` 返回上一级、`00` 退出整个脚本；主菜单没有上一级，`0` 和 `00` 都退出。密码、端口、阈值等普通数据输入不使用菜单导航规则。返回时不再额外要求按 Enter；结果页也支持 `0` 返回、`00` 退出。
+
+主界面按 UTF-8 终端单元计算中英文宽度，无需 Python。宽屏固定双列起点；窄屏或一对内容放不下时自动分行，避免右列错位。
 
 ### 1. SSH 工具集
 
@@ -575,9 +579,11 @@ DNS 设置会自动识别 `systemd-resolved`、NetworkManager、openresolv/resol
 
 **一键 DD / 系统重装：**
 
-界面同时显示中文和英文。该功能会重启 VPS 并进入临时安装环境；看到 `Reinstalling...`、BusyBox 或 `~ #` 时，表示官方安装器仍在工作，不是新系统的正常 Shell。后续日志由 `bin456789/reinstall` 官方工具生成，可能只显示英文；如果安装器停在 `~ #`，可通过服务商控制台或 `tail -fn+1 /var/log/syslog` 排查。
+界面同时显示中文和英文。官方工具成功完成重装准备后，会提供 `1 立即重启 / 0 稍后重启返回 / 00 退出`。选择重启后必须再次输入 `REBOOT`；准备失败、仅下载工具、取消或直接回车都不会自动重启。重启会断开 SSH，请通过商家控制台/VNC查看进度。看到 `Reinstalling...`、BusyBox 或 `~ #` 时，表示仍在安装环境，不是新系统已经安装完成。后续日志由官方工具生成，可能只显示英文；停在 `~ #` 时可查看 `tail -fn+1 /var/log/syslog`。
 
-The reinstall screen is bilingual. It reboots the VPS into a temporary installer environment, so `Reinstalling...`, BusyBox, or `~ #` does not mean the new system is ready. Subsequent output comes from the official `bin456789/reinstall` tool and may be English-only; if the installer stops at `~ #`, use the provider console or `tail -fn+1 /var/log/syslog` for diagnostics.
+**注意：稍后重启或退出脚本不会撤销重装准备，下次重启仍会进入安装环境。** 如果改变主意，应先按官方工具说明运行 `bash /root/reinstall.sh reset` 取消准备。
+
+The bilingual reinstall screen offers reboot only after successful preparation, and requires typing `REBOOT` before requesting it. Returning or exiting leaves preparation in place; use `bash /root/reinstall.sh reset` before rebooting if you want to cancel. Reboot disconnects SSH and enters a temporary installer, so `Reinstalling...`, BusyBox, or `~ #` does not mean the new system is ready. Use the provider console or `tail -fn+1 /var/log/syslog` for diagnostics.
 
 - 支持 Debian 12/13、Ubuntu 22.04/24.04、Alpine 3.20/3.22、Rocky Linux 9
 - 支持自定义 RAW/VHD 镜像直链
@@ -707,6 +713,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.12.10** | 修复无 Python / C locale 下中英文双列错位，过长内容自动分行；补齐菜单 0 返回、00 退出及 EOF 处理，修复 BBR / Fail2ban 多级返回；DD 准备成功后增加二次确认重启；同步 README、BBR 独立版和离线包 |
 | **V3.12.9** | TCP 增强界面增加中文开关状态、推荐值和操作目标值，明确 TFO 双端开启、ECN 协商/回退与 MTU 按需探测含义；仅改显示，不改变现有参数或默认策略；同步 BBR 独立仓及离线包 |
 | **V3.12.8** | 修复离线安装后同版本仍提示更新：显示前与当前运行版本做数字比较，断网时过滤过期缓存；更新缓存迁入工具数据目录并原子写入，拒绝异常版本和不完整下载；新增首页及离线安装回归测试 |
 | **V3.12.7** | 修复 IPv6 RA/转发运行及持久化顺序，回滚恢复转发连带修改的接口状态并最终复核；使用可自动释放的 flock 锁；跳过消失的旧恢复项；防止预设覆盖并发 TCP 偏好；增加隔离模拟与真实 Linux 网络命名空间回归测试 |

@@ -2316,10 +2316,10 @@ ddns_install() {
     menu_div
     menu_item "1" "Cloudflare"
     menu_item "2" "华为云 DNS"
-    menu_item "0" "返回上级" "$RED"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     menu_div
     echo ""
-    read -rp "$(ui_prompt '选择服务商 [1-2]: ')" PROVIDER_CH
+    menu_read PROVIDER_CH '选择服务商 [1-2]: ' || return 0
     case "$PROVIDER_CH" in
         1|"") ddns_install_cloudflare ;;
         2) ddns_install_huawei ;;
@@ -2385,9 +2385,9 @@ ddns_tg_config() {
     echo ""
     menu_pair "1" "配置 Telegram 通知" "2" "发送测试消息"
     [ -f "$DDNS_TG_FILE" ] && menu_item "3" "关闭 Telegram 通知" "$YELLOW"
-    menu_item "0" "返回上级" "$RED"
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     echo ""
-    read -rp "$(ui_prompt '选择操作: ')" CH
+    menu_read CH '选择操作: ' || return 0
 
     case "$CH" in
         1)
@@ -2494,9 +2494,9 @@ ddns_view_logs() {
         menu_div
         menu_item "1" "实时跟踪  ${DIM}Ctrl+C 返回${NC}"
         menu_item "2" "查看完整日志"
-        menu_item "0" "返回上级" "$RED"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         echo ""
-        read -rp "$(ui_prompt '选择查看方式: ')" CH
+        menu_read CH '选择查看方式: ' || return 0
         case "$CH" in
             1)
                 # 设置 trap 后再 tail -f；trap 仅在 tail 进程内生效
@@ -2727,7 +2727,7 @@ ddns_menu() {
         fi
         menu_div
         echo ""
-        read -rp "$(ui_prompt '选择操作: ')" CH
+        menu_read CH '选择操作: ' || return 0
 
         if [ "$D_ST" = "not_installed" ]; then
             case "$CH" in

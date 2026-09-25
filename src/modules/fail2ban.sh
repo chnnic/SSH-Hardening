@@ -194,95 +194,100 @@ f2b_install() {
 
 # ── 基础参数配置 ──────────────────────────────────────────
 f2b_config_params() {
-    print_header "Fail2ban 基础参数配置"
-    local JAIL_LOCAL="/etc/fail2ban/jail.local"
+    while true; do
+        print_header "Fail2ban 基础参数配置"
+        local JAIL_LOCAL="/etc/fail2ban/jail.local"
 
-    # 读取当前值
-    local CUR_BAN CUR_FIND CUR_MAX
-    CUR_BAN=$(grep -E "^bantime\s*=" "$JAIL_LOCAL" 2>/dev/null | tail -1 | awk -F= '{gsub(/ /,"",$2); print $2}')
-    CUR_FIND=$(grep -E "^findtime\s*=" "$JAIL_LOCAL" 2>/dev/null | tail -1 | awk -F= '{gsub(/ /,"",$2); print $2}')
-    CUR_MAX=$(grep -E "^maxretry\s*=" "$JAIL_LOCAL" 2>/dev/null | tail -1 | awk -F= '{gsub(/ /,"",$2); print $2}')
-    [ -z "$CUR_BAN"  ] && CUR_BAN="3600"
-    [ -z "$CUR_FIND" ] && CUR_FIND="600"
-    [ -z "$CUR_MAX"  ] && CUR_MAX="5"
+        # 读取当前值
+        local CUR_BAN CUR_FIND CUR_MAX
+        CUR_BAN=$(grep -E "^bantime\s*=" "$JAIL_LOCAL" 2>/dev/null | tail -1 | awk -F= '{gsub(/ /,"",$2); print $2}')
+        CUR_FIND=$(grep -E "^findtime\s*=" "$JAIL_LOCAL" 2>/dev/null | tail -1 | awk -F= '{gsub(/ /,"",$2); print $2}')
+        CUR_MAX=$(grep -E "^maxretry\s*=" "$JAIL_LOCAL" 2>/dev/null | tail -1 | awk -F= '{gsub(/ /,"",$2); print $2}')
+        [ -z "$CUR_BAN"  ] && CUR_BAN="3600"
+        [ -z "$CUR_FIND" ] && CUR_FIND="600"
+        [ -z "$CUR_MAX"  ] && CUR_MAX="5"
 
-    echo -e "  当前配置："
-    local _BAN_S; _BAN_S=$(f2b_to_seconds "$CUR_BAN")
-    local _FIND_S; _FIND_S=$(f2b_to_seconds "$CUR_FIND")
-    echo -e "  封禁时长  (bantime)  : ${BOLD}${CUR_BAN}${NC}  （$(f2b_seconds_to_human "$_BAN_S")）"
-    echo -e "  时间窗口  (findtime) : ${BOLD}${CUR_FIND}${NC}  （$(f2b_seconds_to_human "$_FIND_S")）"
-    echo -e "  最大重试  (maxretry) : ${BOLD}${CUR_MAX}${NC} 次"
-    echo ""
-    menu_div
-    menu_pair "1" "封禁时长" "2" "时间窗口"
-    menu_pair "3" "最大重试次数" "4" "监控端口"
-    menu_item "5" "快速预设"
-    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
-    menu_div
-    echo ""
-    read -rp "$(ui_prompt '选择参数 [0-5]: ')" CH
+        echo -e "  当前配置："
+        local _BAN_S; _BAN_S=$(f2b_to_seconds "$CUR_BAN")
+        local _FIND_S; _FIND_S=$(f2b_to_seconds "$CUR_FIND")
+        echo -e "  封禁时长  (bantime)  : ${BOLD}${CUR_BAN}${NC}  （$(f2b_seconds_to_human "$_BAN_S")）"
+        echo -e "  时间窗口  (findtime) : ${BOLD}${CUR_FIND}${NC}  （$(f2b_seconds_to_human "$_FIND_S")）"
+        echo -e "  最大重试  (maxretry) : ${BOLD}${CUR_MAX}${NC} 次"
+        echo ""
+        menu_div
+        menu_pair "1" "封禁时长" "2" "时间窗口"
+        menu_pair "3" "最大重试次数" "4" "监控端口"
+        menu_item "5" "快速预设"
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+        menu_div
+        echo ""
+        menu_read CH '选择参数 [0-5]: ' || return 0
 
-    case "$CH" in
-        1)
-            echo ""
-            echo -e "  常用参考：3600=1小时  86400=1天  604800=7天  -1=永久"
-            read -rp "  请输入新的 bantime（秒）: " VAL
-            echo "$VAL" | grep -qE '^-?[0-9]+$' || { error "无效数值"; return; }
-            f2b_set_param "bantime" "$VAL"
-            ;;
-        2)
-            echo ""
-            echo -e "  常用参考：300=5分钟  600=10分钟  3600=1小时"
-            read -rp "  请输入新的 findtime（秒）: " VAL
-            echo "$VAL" | grep -qE '^[0-9]+$' || { error "无效数值"; return; }
-            f2b_set_param "findtime" "$VAL"
-            ;;
-        3)
-            echo ""
-            echo -e "  常用参考：3=严格  5=默认  10=宽松"
-            read -rp "  请输入新的 maxretry（次）: " VAL
-            echo "$VAL" | grep -qE '^[0-9]+$' || { error "无效数值"; return; }
-            f2b_set_param "maxretry" "$VAL"
-            ;;
-        4)
-            echo ""
-            local CUR_SSH_PORT; CUR_SSH_PORT=$(get_config "Port"); CUR_SSH_PORT="${CUR_SSH_PORT:-22}"
-            echo -e "  当前 SSH 端口：${BOLD}${CUR_SSH_PORT}${NC}"
-            echo -e "  示例：ssh  或  22  或  22,2222  或  22:2222"
-            echo -e "  ${DIM}提示：直接回车使用当前 SSH 端口 ${CUR_SSH_PORT}${NC}"
-            echo ""
-            read -rp "  请输入监控端口: " VAL
-            VAL="${VAL:-$CUR_SSH_PORT}"
-            f2b_set_param_jail "port" "$VAL"
-            ;;
-        5)
-            echo ""
-            menu_item "1" "严格 · 1天 / 10分钟 / 3次"
-            menu_item "2" "标准 · 1小时 / 10分钟 / 5次"
-            menu_item "3" "宽松 · 30分钟 / 5分钟 / 10次"
-            menu_item "4" "永久 · 永久 / 10分钟 / 3次" "$YELLOW"
-            echo ""
-            read -rp "$(ui_prompt '选择预设 [1-4]: ')" PRESET
-            case "$PRESET" in
-                1) f2b_set_param "bantime" "86400";  f2b_set_param "findtime" "600"; f2b_set_param "maxretry" "3" ;;
-                2) f2b_set_param "bantime" "3600";   f2b_set_param "findtime" "600"; f2b_set_param "maxretry" "5" ;;
-                3) f2b_set_param "bantime" "1800";   f2b_set_param "findtime" "300"; f2b_set_param "maxretry" "10" ;;
-                4) f2b_set_param "bantime" "-1";     f2b_set_param "findtime" "600"; f2b_set_param "maxretry" "3" ;;
-                *) warn "无效选项"; return ;;
-            esac
-            ;;
-        0) return ;;
-        00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
-        *) warn "无效选项"; return ;;
-    esac
+        case "$CH" in
+            1)
+                echo ""
+                echo -e "  常用参考：3600=1小时  86400=1天  604800=7天  -1=永久"
+                read -rp "  请输入新的 bantime（秒）: " VAL
+                echo "$VAL" | grep -qE '^-?[0-9]+$' || { error "无效数值"; return; }
+                f2b_set_param "bantime" "$VAL"
+                ;;
+            2)
+                echo ""
+                echo -e "  常用参考：300=5分钟  600=10分钟  3600=1小时"
+                read -rp "  请输入新的 findtime（秒）: " VAL
+                echo "$VAL" | grep -qE '^[0-9]+$' || { error "无效数值"; return; }
+                f2b_set_param "findtime" "$VAL"
+                ;;
+            3)
+                echo ""
+                echo -e "  常用参考：3=严格  5=默认  10=宽松"
+                read -rp "  请输入新的 maxretry（次）: " VAL
+                echo "$VAL" | grep -qE '^[0-9]+$' || { error "无效数值"; return; }
+                f2b_set_param "maxretry" "$VAL"
+                ;;
+            4)
+                echo ""
+                local CUR_SSH_PORT; CUR_SSH_PORT=$(get_config "Port"); CUR_SSH_PORT="${CUR_SSH_PORT:-22}"
+                echo -e "  当前 SSH 端口：${BOLD}${CUR_SSH_PORT}${NC}"
+                echo -e "  示例：ssh  或  22  或  22,2222  或  22:2222"
+                echo -e "  ${DIM}提示：直接回车使用当前 SSH 端口 ${CUR_SSH_PORT}${NC}"
+                echo ""
+                read -rp "  请输入监控端口: " VAL
+                VAL="${VAL:-$CUR_SSH_PORT}"
+                f2b_set_param_jail "port" "$VAL"
+                ;;
+            5)
+                echo ""
+                menu_item "1" "严格 · 1天 / 10分钟 / 3次"
+                menu_item "2" "标准 · 1小时 / 10分钟 / 5次"
+                menu_item "3" "宽松 · 30分钟 / 5分钟 / 10次"
+                menu_item "4" "永久 · 永久 / 10分钟 / 3次" "$YELLOW"
+                echo ""
+                menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+                menu_read PRESET '选择预设 [1-4]: ' || return 0
+                case "$PRESET" in
+                    0) continue ;;
+                    1) f2b_set_param "bantime" "86400";  f2b_set_param "findtime" "600"; f2b_set_param "maxretry" "3" ;;
+                    2) f2b_set_param "bantime" "3600";   f2b_set_param "findtime" "600"; f2b_set_param "maxretry" "5" ;;
+                    3) f2b_set_param "bantime" "1800";   f2b_set_param "findtime" "300"; f2b_set_param "maxretry" "10" ;;
+                    4) f2b_set_param "bantime" "-1";     f2b_set_param "findtime" "600"; f2b_set_param "maxretry" "3" ;;
+                    *) warn "无效选项"; return ;;
+                esac
+                ;;
+            0) return ;;
+            00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
+            *) warn "无效选项"; return ;;
+        esac
 
-    echo ""
-    info "重启 Fail2ban 使配置生效..."
-    if restart_fail2ban; then
-        info "Fail2ban 已重启 ✓"
-    else
-        error "重启失败"
-    fi
+        echo ""
+        info "重启 Fail2ban 使配置生效..."
+        if restart_fail2ban; then
+            info "Fail2ban 已重启 ✓"
+        else
+            error "重启失败"
+        fi
+        ui_pause
+    done
 }
 
 f2b_write_section_param() {
@@ -359,7 +364,7 @@ f2b_edit_config() {
     menu_item "2" "查看 jail.conf  ${DIM}只读参考${NC}"
     menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     echo ""
-    read -rp "$(ui_prompt '选择操作 [0-2]: ')" CH
+    menu_read CH '选择操作 [0-2]: ' || return 0
 
     case "$CH" in
         1)
@@ -442,7 +447,7 @@ fail2ban_menu() {
             menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
             menu_div
             echo ""
-            read -rp "$(ui_prompt '选择操作 [0-1]: ')" CHOICE
+            menu_read CHOICE '选择操作 [0-1]: ' || return 0
             case "$CHOICE" in
                 1) f2b_install; ui_continue ;;
                 0) return ;;
@@ -505,7 +510,7 @@ fail2ban_menu() {
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         box_bot
         echo ""
-        read -rp "$(ui_prompt '选择操作 [0-7 / u]: ')" CHOICE
+        menu_read CHOICE '选择操作 [0-7 / u]: ' || return 0
 
         case "$CHOICE" in
             1) f2b_banned_list "$JAIL_NAME" ;;

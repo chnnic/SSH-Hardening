@@ -68,7 +68,7 @@ swap_create() {
     menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     menu_div
     echo ""
-    read -rp "$(ui_prompt '选择大小 [0-5]: ')" CH
+    menu_read CH '选择大小 [0-5]: ' || return 0
 
     local SIZE_MB
     case "$CH" in
@@ -171,7 +171,9 @@ swap_delete() {
     echo ""
     menu_div
     echo -e "  ${DIM}输入编号删除，直接回车取消${NC}"
-    read -rp "  请输入编号: " NUM
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+    menu_read NUM "请输入编号: " || return 0
+    [ "$NUM" = "0" ] && return 0
     [ -z "$NUM" ] && { warn "已取消"; return; }
 
     if ! echo "$NUM" | grep -qE '^[0-9]+$' || [ "$NUM" -lt 1 ] || [ "$NUM" -gt ${#SWAP_LIST[@]} ]; then
@@ -218,7 +220,7 @@ swap_set_swappiness() {
     menu_item "4" "自定义 0-100"
     menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
     echo ""
-    read -rp "$(ui_prompt '选择 Swappiness [0-4]: ')" CH
+    menu_read CH '选择 Swappiness [0-4]: ' || return 0
 
     local VAL
     case "$CH" in
@@ -261,7 +263,7 @@ swap_menu() {
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "$(ui_prompt '选择操作 [0-3]: ')" CH
+        menu_read CH '选择操作 [0-3]: ' || return 0
 
         case "$CH" in
             1) swap_create ;;

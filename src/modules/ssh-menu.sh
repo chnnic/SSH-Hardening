@@ -20,7 +20,7 @@ ssh_tools_menu() {
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        read -rp "$(ui_prompt '选择操作 [0-6]: ')" CHOICE
+        menu_read CHOICE '选择操作 [0-6]: ' || return 0
 
         local NEED_PAUSE=1
         case "$CHOICE" in

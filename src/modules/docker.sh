@@ -107,7 +107,8 @@ docker_select_container() {
     done < <(docker ps -a --format '{{.ID}}|{{.Names}}|{{.State}}|{{.Image}}')
     [ "${#IDS[@]}" -gt 0 ] || { warn "当前没有容器"; return 1; }
     echo ""
-    read -rp "$(ui_prompt '选择容器编号（0 返回）: ')" CH
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+    menu_read CH '选择容器编号: ' || return 1
     [ "$CH" = "0" ] && return 1
     case "$CH" in ''|*[!0-9]*) error "编号无效"; return 1 ;; esac
     I=$((CH-1))
@@ -282,7 +283,7 @@ docker_menu() {
         menu_item "10" "拉取 Compose 文件并部署" "$BLUE"
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div; echo ""
-        read -rp "$(ui_prompt '选择功能 [0-10 / d]: ')" CH
+        menu_read CH '选择功能 [0-10 / d]: ' || return 0
         case "$CH" in
             1) docker_install; ui_pause ;;
             2) docker_require_ready && docker_list_containers; ui_pause ;;

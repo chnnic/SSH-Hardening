@@ -554,7 +554,9 @@ nft_add_rule() {
         echo ""
         menu_item "1" "1:1 映射  ${DIM}目标端口段等于监听端口段${NC}"
         menu_item "2" "端口段偏移  ${DIM}指定目标起始端口${NC}"
-        read -rp "  选择映射模式 [1/2]，默认 1: " mc
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+        menu_read mc "选择映射模式 [1/2]，默认 1: " || return 0
+        [ "$mc" = "0" ] && return 0
         [ -z "$mc" ] && mc=1
         local count=$((le - ls + 1))
         if [ "$mc" = "2" ]; then
@@ -609,7 +611,9 @@ nft_edit_rule() {
         return
     fi
     echo ""
-    read -rp "  请输入要修改的规则 ID（0 取消）: " id
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+    menu_read id "请输入要修改的规则 ID（0 取消）: " || return 0
+    [ "$id" = "0" ] && return 0
     [ "$id" = "0" ] || [ -z "$id" ] && { warn "已取消"; return; }
     nft_find_rule "$id" || { error "未找到该规则"; return; }
 
@@ -672,7 +676,9 @@ nft_edit_rule() {
         menu_item "2" "端口段偏移"
         local default_mc=1
         [ "$OLD_MODE" = "range_offset" ] && default_mc=2
-        read -rp "  选择映射模式 [1/2]，默认 ${default_mc}: " mc
+        menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+        menu_read mc "选择映射模式 [1/2]，默认 ${default_mc}: " || return 0
+        [ "$mc" = "0" ] && return 0
         [ -z "$mc" ] && mc=$default_mc
 
         local count=$((new_le - new_ls + 1))
@@ -738,7 +744,9 @@ nft_delete_rule() {
         return
     fi
     echo ""
-    read -rp "  请输入要删除的规则 ID（0 取消）: " id
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+    menu_read id "请输入要删除的规则 ID（0 取消）: " || return 0
+    [ "$id" = "0" ] && return 0
     [ "$id" = "0" ] || [ -z "$id" ] && { warn "已取消"; return; }
     nft_find_rule "$id" || { error "未找到该规则"; return; }
 
@@ -932,6 +940,7 @@ nft_set_access_mode() {
 }
 
 nft_access_menu() {
+    local ch=""
     while true; do
         local mode count v4 v6
         mode=$(nft_get_access_mode)
@@ -964,7 +973,7 @@ nft_access_menu() {
         menu_item "3" "关闭访问控制" "$YELLOW"
         menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         echo ""
-        read -rp "$(ui_prompt '选择模式: ')" ch
+        menu_read ch '选择模式: ' || return 0
 
         case "$ch" in
             1)
@@ -1101,7 +1110,9 @@ iptpf_add() {
     echo ""
     menu_pair "1" "TCP" "2" "UDP"
     menu_item "3" "TCP + UDP"
-    read -rp "  协议 [1/2/3]，默认 3: " pc
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+    menu_read pc "协议 [1/2/3]，默认 3: " || return 0
+    [ "$pc" = "0" ] && return 0
     [ -z "$pc" ] && pc=3
 
     case "$pc" in
@@ -1138,7 +1149,9 @@ iptpf_delete() {
         return
     fi
     echo ""
-    read -rp "  请输入要删除的规则编号（0 取消）: " id
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+    menu_read id "请输入要删除的规则编号（0 取消）: " || return 0
+    [ "$id" = "0" ] && return 0
     [ "$id" = "0" ] || [ -z "$id" ] && { warn "已取消"; return; }
     if ! echo "$id" | grep -qE '^[0-9]+$'; then
         error "无效编号"
@@ -1193,6 +1206,7 @@ iptpf_clear_all() {
 }
 
 iptpf_menu() {
+    local ch=""
     iptpf_ensure_file
     while true; do
         local count
@@ -1215,7 +1229,7 @@ iptpf_menu() {
         menu_pair "2" "删除指定规则" "3" "清空所有规则" "$YELLOW" "$YELLOW"
         menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
         echo ""
-        read -rp "$(ui_prompt '选择操作: ')" ch
+        menu_read ch '选择操作: ' || return 0
 
         case "$ch" in
             1) iptpf_add ;;
@@ -1232,6 +1246,7 @@ iptpf_menu() {
 
 # ── NFT 主菜单 ────────────────────────────────────────────
 nft_menu() {
+    local ch=""
     nft_ensure_state_dir
 
     while true; do
@@ -1300,7 +1315,7 @@ nft_menu() {
         fi
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         echo ""
-        read -rp "$(ui_prompt '选择操作: ')" ch
+        menu_read ch '选择操作: ' || return 0
 
         if ! command -v nft &>/dev/null; then
             case "$ch" in
