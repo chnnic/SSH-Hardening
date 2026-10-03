@@ -41,6 +41,20 @@ nft_main_config_prepare() {
     return 0
 }
 
+# 回滚/恢复时只重载本脚本托管的表。不能 nft -f /etc/nftables.conf：
+# Debian 默认主配置以 flush ruleset 开头，会清掉 ufw/firewalld/Docker 规则。
+nft_reload_managed_tables() {
+    local managed="$1" family table
+    command -v nft >/dev/null 2>&1 || return 0
+    for family in ip ip6; do
+        for table in nftpf_access nftpf_nat; do
+            nft delete table "$family" "$table" >/dev/null 2>&1 || true
+        done
+    done
+    [ -f "$managed" ] || return 0
+    nft -f "$managed" >/dev/null 2>&1
+}
+
 nft_main_config_remove_include() {
     local tmp
     [ -f "$NFT_CONFIG_FILE" ] || return 0

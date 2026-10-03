@@ -223,9 +223,6 @@ self_install() {
         }
         if self_fetch_script "$DOWNLOAD_TMP"; then
             SOURCE="$DOWNLOAD_TMP"
-        elif self_script_valid /tmp/ssh_hardening.sh; then
-            warn "下载失败，改用已校验的本地缓存"
-            SOURCE="/tmp/ssh_hardening.sh"
         else
             rm -f "$DOWNLOAD_TMP"
             error "无法获取完整脚本，请检查网络"
@@ -266,7 +263,14 @@ self_update() {
     echo -e "  ${DIM}${SCRIPT_URL}${NC}"
     echo ""
 
-    local TMP_FILE CHECKSUM_FILE MANIFEST_FILE; TMP_FILE="/tmp/vps_update_$$.sh"; CHECKSUM_FILE="/tmp/vps_update_$$.sha256"; MANIFEST_FILE="/tmp/vps_update_$$.manifest.json"
+    # 私有临时目录：root 下载时不能复用其他用户可预测/预建的 /tmp 路径。
+    local UPDATE_TMP_DIR TMP_FILE CHECKSUM_FILE MANIFEST_FILE
+    UPDATE_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/vps-tools-update.XXXXXX") || {
+        error "无法创建更新临时目录"; return 1
+    }
+    TMP_FILE="$UPDATE_TMP_DIR/SSH-Hardening.sh"
+    CHECKSUM_FILE="$UPDATE_TMP_DIR/SSH-Hardening.sh.sha256"
+    MANIFEST_FILE="$UPDATE_TMP_DIR/SSH-Hardening.manifest.json"
 
     info "正在下载最新版本..."
     local TRY EXPECTED_HASH ACTUAL_HASH DOWNLOAD_OK SCRIPT_FETCH_URL CHECKSUM_FETCH_URL MANIFEST_FETCH_URL TS REMOTE_SHA
@@ -336,7 +340,7 @@ self_update() {
     done
     rm -f "$CHECKSUM_FILE" "$MANIFEST_FILE"
     if [ "$DOWNLOAD_OK" -ne 1 ]; then
-        rm -f "$TMP_FILE"
+        rm -rf "$UPDATE_TMP_DIR"
         error "SHA256 校验失败，已拒绝更新"
         echo -e "  ${DIM}可先手动验证：curl -fsSL '${SCRIPT_URL}' -o /tmp/SSH-Hardening.sh && sha256sum /tmp/SSH-Hardening.sh${NC}"
         echo -e "  ${DIM}若 VPS 网络缓存异常，可临时手动覆盖：curl -fsSL '${SCRIPT_URL}' -o ${LOCAL_SCRIPT} && chmod +x ${LOCAL_SCRIPT}${NC}"
@@ -347,7 +351,7 @@ self_update() {
 
     # 验证语法
     if ! bash -n "$TMP_FILE" 2>/dev/null; then
-        rm -f "$TMP_FILE"
+        rm -rf "$UPDATE_TMP_DIR"
         error "下载的文件语法有误，已取消更新"
         return
     fi
@@ -360,23 +364,22 @@ self_update() {
 
     # 覆盖前保留当前可执行版本
     if [ -f "$LOCAL_SCRIPT" ]; then
-        mkdir -p "$VPS_VERSION_DIR" || { rm -f "$TMP_FILE"; error "无法创建版本备份目录"; return 1; }
+        mkdir -p "$VPS_VERSION_DIR" || { rm -rf "$UPDATE_TMP_DIR"; error "无法创建版本备份目录"; return 1; }
         chmod 700 "$VPS_DATA_DIR" "$VPS_VERSION_DIR" 2>/dev/null || true
         local SAVED_VER
         SAVED_VER="${CUR_VER:-unknown}_$(date +%Y%m%d_%H%M%S).sh"
         cp "$LOCAL_SCRIPT" "$VPS_VERSION_DIR/$SAVED_VER" \
             && chmod 700 "$VPS_VERSION_DIR/$SAVED_VER" \
-            || { rm -f "$TMP_FILE"; error "当前版本备份失败，已取消更新"; return 1; }
+            || { rm -rf "$UPDATE_TMP_DIR"; error "当前版本备份失败，已取消更新"; return 1; }
     fi
     # 同目录写入后原子替换，避免磁盘满或中断破坏当前脚本。
     if ! self_atomic_replace "$TMP_FILE" "$LOCAL_SCRIPT"; then
-        rm -f "$TMP_FILE"
+        rm -rf "$UPDATE_TMP_DIR"
         error "更新文件安装失败，当前版本未被替换"
         audit_action "脚本更新安装失败" FAILED
         return 1
     fi
-    cp "$TMP_FILE" /tmp/ssh_hardening.sh 2>/dev/null
-    rm -f "$TMP_FILE"
+    rm -rf "$UPDATE_TMP_DIR"
 
     # 确保 v 命令还在
     self_install_shortcut v || warn "快捷键 v 修复失败"
