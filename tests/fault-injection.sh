@@ -688,4 +688,94 @@ self_reconcile_tc_after_update >/dev/null \
 [ -f "$UPDATE_TC_MARKER" ] \
     || { echo "Updater reconciled tc through the old process" >&2; exit 1; }
 
+# Changing Port must disable unmanaged Port lines; Port is cumulative in sshd.
+(
+    CFG="$TMP/sshd-port-dup"
+    printf 'Include /etc/ssh/sshd_config.d/*.conf\nPort 22\n  port 2200\nPasswordAuthentication yes\nMatch User backup\n    PasswordAuthentication no\n' > "$CFG"
+    set_config_file "$CFG" Port 2222
+    sshd_comment_unmanaged_directive "$CFG" Port
+    [ "$(grep -cE '^[[:space:]]*[Pp]ort[[:space:]]' "$CFG")" -eq 1 ] \
+        || { echo "Old Port lines stayed active after port change" >&2; exit 1; }
+    grep -qx 'Port 2222' "$CFG" || { echo "Managed Port line missing" >&2; exit 1; }
+    grep -qx '    PasswordAuthentication no' "$CFG" || { echo "Match block was modified" >&2; exit 1; }
+)
+
+# Socket-activated sshd (Ubuntu 22.10+) must reload the generator and restart ssh.socket.
+(
+    unset -f restart_ssh
+    eval "$(sed -n '/^restart_ssh() {/,/^}/p' "$ROOT/src/lib/core.sh")"
+    CALLS="$TMP/systemctl-calls"
+    : > "$CALLS"
+    systemd_available() { return 0; }
+    systemctl() { echo "$*" >> "$CALLS"; return 0; }
+    restart_ssh || { echo "Socket-activated SSH restart failed" >&2; exit 1; }
+    grep -qx 'daemon-reload' "$CALLS" && grep -qx 'restart ssh.socket' "$CALLS" \
+        || { echo "restart_ssh ignored ssh.socket activation" >&2; exit 1; }
+)
+
+# Arming a new rollback must not orphan or silently cancel a pending one.
+(
+    warn() { :; }; error() { :; }; info() { :; }; audit_action() { :; }
+    sleep 30 &
+    SAFETY_PID=$!
+    SAFETY_SCRIPT="$TMP/pending-rollback.sh"
+    ! safety_resolve_pending <<< "n" >/dev/null 2>&1 \
+        || { echo "Pending rollback was replaced without confirmation" >&2; exit 1; }
+    kill -0 "$SAFETY_PID" 2>/dev/null || { echo "Pending rollback was cancelled without confirmation" >&2; exit 1; }
+    ! ip_source_safety_arm 4 'default via 192.0.2.1 dev eth0' <<< "n" >/dev/null 2>&1 \
+        || { echo "IP source switch cancelled a pending rollback" >&2; exit 1; }
+    kill -0 "$SAFETY_PID" 2>/dev/null || { echo "IP source switch killed a pending rollback" >&2; exit 1; }
+    safety_resolve_pending <<< "y" >/dev/null 2>&1 || { echo "Confirmed rollback still blocked new changes" >&2; exit 1; }
+    [ -z "$SAFETY_PID" ] || { echo "Confirmed rollback was not cleared" >&2; exit 1; }
+)
+
+# The rollback script must be self-contained and never reload the full nftables.conf.
+(
+    VPS_DATA_DIR="$TMP/rollback-script"
+    mkdir -p "$VPS_DATA_DIR"
+    eval "$(sed -n '/^restart_ssh() {/,/^}/p' "$ROOT/src/lib/core.sh")"
+    warn() { :; }; audit_action() { :; }
+    config_backup_create() { echo "$TMP/snap.tar.gz"; }
+    nohup() { return 0; }
+    safety_arm ssh_port >/dev/null
+    bash -n "$SAFETY_SCRIPT" || { echo "Rollback script has a syntax error" >&2; exit 1; }
+    grep -q '^restart_ssh ()' "$SAFETY_SCRIPT" && grep -q 'rc-service sshd restart' "$SAFETY_SCRIPT" \
+        || { echo "Rollback script cannot restart sshd on OpenRC" >&2; exit 1; }
+    ! grep -q 'nft -f /etc/nftables.conf' "$SAFETY_SCRIPT" \
+        || { echo "Rollback script reloads the full nftables ruleset" >&2; exit 1; }
+    grep -q "nft_reload_managed_tables '$NFT_MANAGED_FILE'" "$SAFETY_SCRIPT" \
+        || { echo "Rollback script does not restore managed nft tables" >&2; exit 1; }
+    cancel_safety_timer
+)
+
+# Fail2ban must protect the real SSH port and follow port changes.
+(
+    F2B_JAIL_LOCAL="$TMP/jail.local"
+    info() { :; }; warn() { :; }; error() { :; }
+    f2b_status() { echo not_installed; }
+    get_config() { echo 2222; }
+    [ "$(f2b_ssh_port_value)" = 2222 ] || { echo "Fail2ban jail ignored the custom SSH port" >&2; exit 1; }
+    printf '[DEFAULT]\nbantime = 3600\n\n[sshd]\nenabled = true\nport     = ssh\n' > "$F2B_JAIL_LOCAL"
+    f2b_sync_ssh_port 22 2222
+    [ "$(f2b_section_value sshd port)" = 2222 ] || { echo "Fail2ban port was not synced" >&2; exit 1; }
+    printf '[sshd]\nport = 22,8022\n' > "$F2B_JAIL_LOCAL"
+    f2b_sync_ssh_port 22 2222
+    [ "$(f2b_section_value sshd port)" = "22,8022" ] || { echo "Custom fail2ban ports were overwritten" >&2; exit 1; }
+)
+
+# Pasted keys are validated and deduplicated one line at a time.
+(
+    command -v ssh-keygen >/dev/null 2>&1 || exit 0
+    AUTH_KEYS="$TMP/keys/authorized_keys"
+    print_header() { :; }; menu_div() { :; }; info() { :; }; warn() { :; }; error() { :; }
+    ssh-keygen -q -t ed25519 -N '' -C one -f "$TMP/k1" && ssh-keygen -q -t ed25519 -N '' -C two -f "$TMP/k2"
+    mkdir -p "$TMP/keys"
+    printf '%s' "$(cat "$TMP/k1.pub")" > "$AUTH_KEYS"
+    printf '\n%s\r\n\n%s\n' "$(cat "$TMP/k1.pub")" "$(cat "$TMP/k2.pub")" | add_key >/dev/null
+    [ "$(ssh_key_count)" -eq 2 ] || { echo "add_key skipped a new key next to an existing one" >&2; exit 1; }
+    printf '%s\nroot@vps:~# junk\n' "$(cat "$TMP/k1.pub" | sed 's/one/three/')" | add_key >/dev/null
+    ! grep -q junk "$AUTH_KEYS" || { echo "add_key wrote a non-key line" >&2; exit 1; }
+    [ "$(wc -l < "$AUTH_KEYS")" -eq 2 ] || { echo "add_key wrote a partial batch" >&2; exit 1; }
+)
+
 echo "Fault injection tests passed."

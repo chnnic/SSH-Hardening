@@ -96,6 +96,22 @@ cancel_safety_timer() {
     SAFETY_PID="" SAFETY_SCRIPT=""
 }
 
+# 同一时刻只能有一个回滚计时器：覆盖 SAFETY_PID 会留下无法取消的旧计时器，
+# 直接取消则会让上一项未确认的变更失去保护。
+safety_resolve_pending() {
+    [ -n "${SAFETY_PID:-}" ] || return 0
+    if ! kill -0 "$SAFETY_PID" 2>/dev/null; then
+        wait "$SAFETY_PID" 2>/dev/null || true
+        SAFETY_PID="" SAFETY_SCRIPT=""
+        return 0
+    fi
+    warn "上一项变更的自动回滚仍在计时，需先确认连接正常才能继续。"
+    safety_confirm
+    [ -z "${SAFETY_PID:-}" ] && return 0
+    error "已取消本次操作：请先确认上一项变更，或等待其自动回滚完成。"
+    return 1
+}
+
 confirm_change_preview() {
     local TITLE="$1"
     shift
@@ -164,7 +180,7 @@ config_backup_restore() {
     fi
     restart_ssh 2>/dev/null || true
     command -v systemctl >/dev/null 2>&1 && systemctl restart systemd-resolved 2>/dev/null || true
-    command -v nft >/dev/null 2>&1 && [ -f /etc/nftables.conf ] && nft -f /etc/nftables.conf 2>/dev/null || true
+    nft_reload_managed_tables "$NFT_MANAGED_FILE" || true
     audit_action "恢复配置 $(basename "$FILE")" SUCCESS
     info "配置恢复完成"
     safety_confirm
@@ -2873,6 +2889,7 @@ EOF
 
 safety_arm() {
     local LABEL="$1" SNAP SCRIPT UFW_STATE="inactive" FIREWALLD_STATE="inactive"
+    safety_resolve_pending || return 1
     SNAP=$(config_backup_create "safety_${LABEL}" true) || return 1
     command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active' && UFW_STATE="active"
     svc_is_active firewalld && FIREWALLD_STATE="active"
@@ -2883,7 +2900,8 @@ safety_arm() {
 sleep 180
 tar -xzf '$SNAP' -C / >/dev/null 2>&1
 tar -tzf '$SNAP' 2>/dev/null | grep -qx 'etc/sysctl.d/99-ipv6-disable.conf' || rm -f /etc/sysctl.d/99-ipv6-disable.conf
-sshd -t >/dev/null 2>&1 && (systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || service sshd restart 2>/dev/null)
+$(declare -f systemd_available restart_ssh nft_reload_managed_tables)
+sshd -t >/dev/null 2>&1 && restart_ssh
 systemctl restart systemd-resolved >/dev/null 2>&1 || true
 systemctl restart NetworkManager >/dev/null 2>&1 || true
 command -v resolvconf >/dev/null 2>&1 && resolvconf -u >/dev/null 2>&1 || true
@@ -2894,7 +2912,7 @@ if command -v firewall-cmd >/dev/null 2>&1; then
     if [ '$FIREWALLD_STATE' = active ]; then systemctl start firewalld >/dev/null 2>&1; else systemctl stop firewalld >/dev/null 2>&1; fi
     firewall-cmd --reload >/dev/null 2>&1 || true
 fi
-nft -f /etc/nftables.conf >/dev/null 2>&1 || true
+nft_reload_managed_tables '$NFT_MANAGED_FILE' || true
 logger -t vps-tools '未确认连接，已自动恢复 $LABEL 配置'
 rm -f '$SCRIPT'
 ROLLBACK_EOF

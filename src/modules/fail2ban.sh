@@ -127,7 +127,7 @@ f2b_install() {
         echo ""
         echo "[sshd]"
         echo "enabled  = true"
-        echo "port     = ssh"
+        echo "port     = $(f2b_ssh_port_value)"
         # aggressive：纯公钥机(禁密码)下，扫描者被 publickey 拒绝/探测即断的行为
         # 默认 normal 模式不计为 failure；aggressive 才能抓到并封禁
         echo "mode     = aggressive"
@@ -290,6 +290,41 @@ f2b_config_params() {
     done
 }
 
+# [sshd] 监控端口：22 保持 fail2ban 的 ssh 别名，自定义端口写数字，否则封禁只作用于 22。
+f2b_ssh_port_value() {
+    local PORT
+    PORT=$(get_config "Port"); PORT="${PORT:-22}"
+    if [ "$PORT" = 22 ]; then echo ssh; else echo "$PORT"; fi
+}
+
+f2b_section_value() {
+    local SECTION="$1" KEY="$2" JAIL_LOCAL="${F2B_JAIL_LOCAL:-/etc/fail2ban/jail.local}"
+    [ -f "$JAIL_LOCAL" ] || return 0
+    awk -v section="[$SECTION]" -v key="$KEY" '
+        /^\[[^]]+\][[:space:]]*$/ { current=$0; gsub(/[[:space:]]+$/, "", current); in_target=(current == section); next }
+        in_target && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+            value=$0; sub(/^[^=]*=[[:space:]]*/, "", value); sub(/[[:space:]]+$/, "", value)
+        }
+        END { print value }
+    ' "$JAIL_LOCAL"
+}
+
+# SSH 改端口后同步 [sshd] port。只替换仍指向旧端口的值，用户自定义的多端口不动。
+f2b_sync_ssh_port() {
+    local OLD="$1" NEW="$2" CUR JAIL_LOCAL="${F2B_JAIL_LOCAL:-/etc/fail2ban/jail.local}"
+    [ -f "$JAIL_LOCAL" ] || return 0
+    CUR=$(f2b_section_value sshd port)
+    case "$CUR" in
+        ""|ssh|"$OLD") ;;
+        *) warn "Fail2ban [sshd] 监控端口为自定义值 ${CUR}，未自动修改，请确认已包含 ${NEW}"; return 0 ;;
+    esac
+    f2b_set_section_param sshd port "$NEW" || return 1
+    info "Fail2ban [sshd] 监控端口已同步为 ${NEW} ✓"
+    if [ "$(f2b_status)" = running ]; then
+        restart_fail2ban || warn "Fail2ban 重启失败，新端口规则将在下次启动时生效"
+    fi
+}
+
 f2b_write_section_param() {
     local SECTION="$1" KEY="$2" VAL="$3" JAIL_LOCAL="${F2B_JAIL_LOCAL:-/etc/fail2ban/jail.local}" TMP
     mkdir -p "$(dirname "$JAIL_LOCAL")" || return 1
@@ -370,7 +405,8 @@ f2b_edit_config() {
         1)
             if [ ! -f "$JAIL_LOCAL" ]; then
                 warn "jail.local 不存在，正在创建默认模板..."
-                cat > "$JAIL_LOCAL" << 'JAILEOF'
+                local F2B_PORT; F2B_PORT=$(f2b_ssh_port_value)
+                cat > "$JAIL_LOCAL" << JAILEOF
 [DEFAULT]
 bantime  = 3600
 findtime = 600
@@ -379,7 +415,7 @@ backend  = auto
 
 [sshd]
 enabled  = true
-port     = ssh
+port     = ${F2B_PORT}
 logpath  = %(sshd_log)s
 JAILEOF
                 info "已创建 $JAIL_LOCAL"

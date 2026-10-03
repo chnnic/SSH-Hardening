@@ -253,7 +253,7 @@ ip_source_route_restore() {
 ip_source_safety_arm() {
     local family="$1" route_line="$2" script token skip_next=0
     local tokens=() output=()
-    cancel_safety_timer
+    safety_resolve_pending || return 1
     read -r -a tokens <<< "$route_line"
     [ "${#tokens[@]}" -gt 0 ] || return 1
     for token in "${tokens[@]}"; do

@@ -18,32 +18,60 @@ add_key() {
     menu_div
     echo ""
 
-    if [ -z "$PUBKEY_INPUT" ]; then
+    # 逐行处理：去掉 CR 和空行；任何一行不是公钥就整体拒绝，避免把提示符/折行碎片写入。
+    local KEY_LINES=() LINE BAD=0
+    while IFS= read -r LINE; do
+        LINE=${LINE%$'\r'}
+        LINE=$(printf '%s' "$LINE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        [ -n "$LINE" ] || continue
+        if ! printf '%s\n' "$LINE" | grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss)[^[:space:]]* [A-Za-z0-9+/=]+( .*)?$'; then
+            BAD=1; break
+        fi
+        if command -v ssh-keygen >/dev/null 2>&1 && ! printf '%s\n' "$LINE" | ssh-keygen -lf /dev/stdin >/dev/null 2>&1; then
+            BAD=1; break
+        fi
+        KEY_LINES+=("$LINE")
+    done <<< "$PUBKEY_INPUT"
+
+    if [ "${#KEY_LINES[@]}" -eq 0 ]; then
         warn "未输入任何内容，已取消。"
         return
     fi
-    if ! echo "$PUBKEY_INPUT" | grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) '; then
-        error "公钥格式不正确，应以密钥类型开头（如 ssh-ed25519）。"
+    if [ "$BAD" -eq 1 ]; then
+        error "公钥格式不正确：${LINE:0:40}"
+        echo -e "  ${DIM}每行一个公钥，以密钥类型开头（如 ssh-ed25519 AAAA... 备注）。未写入任何公钥。${NC}"
         return
     fi
 
     mkdir -p "$(dirname "$AUTH_KEYS")"
     chmod 700 "$(dirname "$AUTH_KEYS")"
 
-    # 检查是否已存在相同公钥（取类型+主体比较，忽略备注差异）
-    local KEY_BODY
-    KEY_BODY=$(echo "$PUBKEY_INPUT" | awk '{print $1, $2}')
-    if grep -qF "$KEY_BODY" "$AUTH_KEYS" 2>/dev/null; then
-        warn "该公钥已存在，跳过添加（避免重复）"
-        return
+    # 按“类型 + 主体”去重，忽略备注差异；每把钥匙单独判断。
+    local KEY_BODY ADDED=0 SKIPPED=0 SEEN=""
+    # 原文件末尾没有换行时先补上，避免新公钥拼接到最后一行。
+    if [ -s "$AUTH_KEYS" ] && [ -n "$(tail -c 1 "$AUTH_KEYS")" ]; then
+        printf '\n' >> "$AUTH_KEYS"
     fi
+    for LINE in "${KEY_LINES[@]}"; do
+        KEY_BODY=$(printf '%s\n' "$LINE" | awk '{print $1, $2}')
+        if grep -qF -- "$KEY_BODY" "$AUTH_KEYS" 2>/dev/null || printf '%s' "$SEEN" | grep -qxF -- "$KEY_BODY"; then
+            SKIPPED=$((SKIPPED + 1))
+            continue
+        fi
+        printf '%s\n' "$LINE" >> "$AUTH_KEYS"
+        SEEN="${SEEN}${KEY_BODY}"$'\n'
+        ADDED=$((ADDED + 1))
+    done
+    chmod 600 "$AUTH_KEYS" 2>/dev/null || true
 
-    echo "$PUBKEY_INPUT" >> "$AUTH_KEYS"
-    chmod 600 "$AUTH_KEYS"
-
+    [ "$SKIPPED" -gt 0 ] && warn "跳过 ${SKIPPED} 个已存在的公钥"
     local TOTAL
     TOTAL=$(ssh_key_count)
-    info "公钥已添加！当前共 $TOTAL 个公钥 ✓"
+    if [ "$ADDED" -gt 0 ]; then
+        info "已添加 ${ADDED} 个公钥！当前共 $TOTAL 个公钥 ✓"
+    else
+        warn "没有新增公钥（当前共 $TOTAL 个）"
+    fi
 }
 
 delete_key() {
@@ -258,6 +286,19 @@ set_login_mode() {
     esac
 }
 
+# 重启后核对实际监听：socket 激活、Include 片段里的 Port 都可能让结果与预期不同。
+ssh_port_report_listeners() {
+    local WANT="$1" EXTRA i
+    EXTRA=$(sshd_effective_ports 2>/dev/null | grep -vx "$WANT" | sort -u | paste -sd' ' -)
+    [ -n "$EXTRA" ] && warn "sshd 配置仍包含其它端口：${EXTRA}（可能来自 /etc/ssh/sshd_config.d/），请手动检查"
+    command -v ss >/dev/null 2>&1 || return 0
+    for i in 1 2 3; do
+        ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${WANT}\$" && return 0
+        [ "$i" -lt 3 ] && sleep 1
+    done
+    warn "未检测到 ${WANT}/tcp 处于监听状态，请勿确认，等待自动回滚或手动检查 SSH 服务"
+}
+
 change_port() {
     print_header "修改 SSH 端口"
 
@@ -284,6 +325,7 @@ change_port() {
     local CANDIDATE; CANDIDATE=$(mktemp)
     cp "$SSHD_CONFIG" "$CANDIDATE"
     set_config_file "$CANDIDATE" "Port" "$INPUT_PORT"
+    sshd_comment_unmanaged_directive "$CANDIDATE" "Port" || { rm -f "$CANDIDATE"; error "无法生成候选配置"; return 1; }
 
     if ! confirm_file_diff "$SSHD_CONFIG" "$CANDIDATE" "SSH 端口 ${CURRENT_PORT:-22} → $INPUT_PORT"; then
         rm -f "$CANDIDATE"
@@ -309,6 +351,7 @@ change_port() {
         return
     }
     audit_action "SSH端口 ${CURRENT_PORT:-22} 修改为 $INPUT_PORT" SUCCESS
+    ssh_port_report_listeners "$INPUT_PORT"
 
     echo ""
     menu_div
@@ -333,6 +376,7 @@ change_port() {
     cancel_safety_timer
     audit_action "确认 SSH 新端口 ${INPUT_PORT} 可登录，取消自动回滚" SUCCESS
     info "已确认新端口可登录，自动回滚已取消。"
+    f2b_sync_ssh_port "$OLD_PORT" "$INPUT_PORT" || warn "Fail2ban 监控端口同步失败，请在 Fail2ban 菜单手动设置为 ${INPUT_PORT}"
 
     echo ""
     warn "下面只清理旧端口 ${OLD_PORT}/tcp 的防火墙放行规则，不会再修改 SSH 监听端口。"
