@@ -145,6 +145,14 @@ bbr_ensure_baseline() {
     }
 }
 
+# 无符号十进制比较（fs.file-max 可达 LONG_MAX，按长度再按字典序比较避免溢出）。
+bbr_uint_greater() {
+    case "$1$2" in ''|*[!0-9]*) return 1 ;; esac
+    local A="${1#"${1%%[!0]*}"}" B="${2#"${2%%[!0]*}"}"
+    [ "${#A}" -ne "${#B}" ] && { [ "${#A}" -gt "${#B}" ]; return; }
+    [[ "$A" > "$B" ]]
+}
+
 bbr_baseline_value() {
     local KEY="$1"
     [ -f "$BBR_BASELINE_FILE" ] || return 1
@@ -717,8 +725,8 @@ bbr_restore_sysctl() {
                 CONFIG=$(printf '%s\n' "$CONFIG" | awk '{ key=$0; sub(/=.*/, "", key); gsub(/^[[:space:]]+|[[:space:]]+$/, "", key) } key != "vm.swappiness"')
                 bbr_restore_routing_filter "$CONFIG" "$OLD_CONFIG"
                 CONFIG="$BBR_RESTORE_CONFIG"
-                bbr_handoff_swappiness "$OLD_CONFIG"
                 if bbr_apply_sysctl "$CONFIG" baseline "$RESTORE" '' '' "$OLD_CONFIG"; then
+                    bbr_handoff_swappiness "$OLD_CONFIG"
                     bbr_conntrack_sync_persistence
                     info "已还原运行参数：$(basename "$T") ✓"
                 else
@@ -794,12 +802,26 @@ bbr_apply_sysctl() (
         done
         while IFS= read -r KEY; do
             if bbr_config_has_key "$OLD" "$KEY" && ! bbr_config_has_key "$CONFIG" "$KEY"; then
+                # fs.file-max 只升不降：原值更大时直接恢复，不需要用户判断。
+                if [ "$KEY" = fs.file-max ]; then
+                    bbr_config_has_key "$RESTORE" "$KEY" && continue
+                    if VALUE=$(bbr_baseline_value "$KEY" 2>/dev/null) && LINE=$(sysctl -n "$KEY" 2>/dev/null) \
+                        && bbr_uint_greater "$VALUE" "$LINE"; then
+                        RESTORE="${RESTORE}${KEY} = ${VALUE}"$'\n'
+                        info "fs.file-max 恢复为原值 ${VALUE}（本工具不再写入更低的 ${LINE}）"
+                    fi
+                    continue
+                fi
                 STALE="${STALE}${KEY}"$'\n'
             fi
         done < <({ bbr_scene_keys; bbr_config_dynamic_scene_keys "$OLD"; } | awk '!seen[$0]++')
         if [ -n "$STALE" ]; then
-            warn "新预设不再管理以下场景参数："
-            printf '%s' "$STALE"
+            warn "新预设不再管理以下场景参数（可恢复为首次调优前的值）："
+            for KEY in $STALE; do
+                printf '    %s：当前 %s，原值 %s\n' "$KEY" \
+                    "$(sysctl -n "$KEY" 2>/dev/null | bbr_sysctl_normalize || echo 不可读)" \
+                    "$(bbr_baseline_value "$KEY" 2>/dev/null || echo 未记录)"
+            done
             printf '%s' "$STALE" | grep -q 'forward' && warn "恢复转发参数可能影响路由/NAT"
             ANSWER=n
             if [ "$STALE_MODE" = baseline ]; then
@@ -1600,11 +1622,26 @@ bbr_listening_ports_from() {
     ' | sort -n -u
 }
 
+# 输出与内核回读完全一致的规范格式：内核会把连续端口合并成 a-b 区间，
+# 写入 "11101,11102" 会读回 "11101-11102"，不规范化会被事务判为写入失败。
 bbr_reserved_ports_value() {
     local CURRENT
     CURRENT=$(sysctl -n net.ipv4.ip_local_reserved_ports 2>/dev/null | tr -d '[:space:]' || true)
     { printf '%s\n' "$CURRENT" | tr ',' '\n'; bbr_listening_ports_from "$BBR_SCENE_PORT_MIN"; } \
-        | awk 'NF && !seen[$0]++' | sort -t- -k1,1n | paste -sd, -
+        | bbr_port_list_canonical
+}
+
+bbr_port_list_canonical() {
+    awk -F- '
+        NF == 2 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { for (p = $1 + 0; p <= $2 + 0 && p <= 65535; p++) print p; next }
+        NF == 1 && $1 ~ /^[0-9]+$/ && $1 + 0 <= 65535 { print $1 + 0 }
+    ' | sort -n -u | awk '
+        function flush() { out = out sep (start == end ? start : start "-" end); sep = "," }
+        NR == 1 { start = end = $1; next }
+        $1 == end + 1 { end = $1; next }
+        { flush(); start = end = $1 }
+        END { if (NR) { flush(); print out } }
+    '
 }
 
 bbr_conntrack_max_for_memory() {
@@ -1800,11 +1837,11 @@ bbr_confirm_apply() {
     [ "$ENABLE_FORWARD" != 1 ] \
         || ensure_conntrack_module \
         || warn "无法预加载 nf_conntrack，将按内核实际支持情况应用"
-    bbr_handoff_swappiness "$ORIGINAL_CONFIG"
     bbr_apply_sysctl "$CONFIG" ask '' '' '' "$ORIGINAL_CONFIG" || {
         error "BBR TCP 调优配置应用失败"
         return 1
     }
+    bbr_handoff_swappiness "$ORIGINAL_CONFIG"
     bbr_conntrack_sync_persistence
     bbr_refresh_root_qdisc
     # 场景预设（转发机）额外检测代理 service 的 fd 上限

@@ -230,6 +230,15 @@ if declare -F swap_sync_bbr_swappiness >/dev/null; then
     [ "$(bbr_config_value "$(cat "$SYSCTL_FILE")" net.core.wmem_max)" = 8192 ] || fail 'swappiness sync changed other BBR keys'
 fi
 
+fixture file_max_stale
+mkdir -p "$BBR_PROC_SYS/fs"
+printf '1048576\n' > "$BBR_PROC_SYS/fs/file-max"
+printf 'fs.file-max = 1048576\n' >> "$SYSCTL_FILE"
+printf 'fs.file-max = 9223372036854775807\n' > "$BBR_BASELINE_FILE"
+bbr_apply_sysctl 'net.core.wmem_max = 8192' ask </dev/null >/dev/null || fail 'file-max stale handling'
+[ "$(sysctl -n fs.file-max)" = 9223372036854775807 ] || fail 'larger original fs.file-max not restored'
+! bbr_config_has_key "$(cat "$SYSCTL_FILE")" fs.file-max || fail 'lower fs.file-max still persisted'
+
 fixture preset_missing_fallback
 bbr_tcp_set ECN on >/dev/null || fail 'initial ECN setting'
 mv "$(bbr_sysctl_path net.ipv4.tcp_ecn_fallback)" "$TEST_CASE/absent-fallback"
