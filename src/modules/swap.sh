@@ -206,6 +206,24 @@ swap_delete() {
     fi
 }
 
+# BBR 预设也持久化 vm.swappiness，且 systemd 下 99-vps-bbr.conf 晚于
+# sysctl.conf（99-sysctl.conf）加载：只写 sysctl.conf 会在重启后被覆盖。
+swap_sync_bbr_swappiness() {
+    local VAL="$1" ORIGINAL NEW
+    [ -f "$SYSCTL_FILE" ] || return 0
+    ORIGINAL=$(cat "$SYSCTL_FILE")
+    bbr_config_has_key "$ORIGINAL" vm.swappiness || return 0
+    NEW=$(printf '%s\n' "$ORIGINAL" | awk -v value="$VAL" '
+        { key=$0; sub(/=.*/, "", key); gsub(/^[[:space:]]+|[[:space:]]+$/, "", key) }
+        key == "vm.swappiness" { print "vm.swappiness = " value; next }
+        { print }
+    ')
+    bbr_apply_sysctl "$NEW" preserve '' '' vm.swappiness "$ORIGINAL" || {
+        error "已修改 sysctl.conf，但 BBR 配置 ${SYSCTL_FILE} 中的 swappiness 同步失败，重启后可能被覆盖"
+        return 1
+    }
+}
+
 # ── 修改 swappiness ───────────────────────────────────────
 swap_set_swappiness() {
     print_header "设置 Swappiness"
@@ -249,6 +267,7 @@ swap_set_swappiness() {
     fi
 
     sysctl -p &>/dev/null || { error "sysctl 配置加载失败"; return 1; }
+    swap_sync_bbr_swappiness "$VAL" || return 1
     info "swappiness 已设置为 ${VAL}，重启后持续生效 ✓"
 }
 

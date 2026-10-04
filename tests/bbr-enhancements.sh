@@ -211,6 +211,25 @@ CONFIG=$(bbr_generate_config 8192 8192 4096 10 balanced 0)
 [ "$(bbr_config_value "$CONFIG" net.ipv4.tcp_ecn)" = 1 ] || fail 'backup lost ECN management preference'
 ! bbr_config_has_key "$CONFIG" net.ipv4.tcp_fastopen || fail 'backup lost TFO system preference'
 
+fixture restore_routing
+bbr_backup_sysctl >/dev/null || fail 'backup before forwarding change'
+printf '1\n' > "$(bbr_sysctl_path net.ipv4.ip_forward)"
+printf '1\nn\n' | bbr_restore_sysctl >/dev/null || fail 'restore while keeping forwarding'
+[ "$(sysctl -n net.ipv4.ip_forward)" = 1 ] || fail 'restore changed ip_forward without confirmation'
+! grep -q '^net.ipv4.ip_forward' "$SYSCTL_FILE" || fail 'restore started managing unmanaged ip_forward'
+printf '1\ny\n' | bbr_restore_sysctl >/dev/null || fail 'restore with confirmed forwarding'
+[ "$(sysctl -n net.ipv4.ip_forward)" = 0 ] || fail 'confirmed restore did not restore ip_forward'
+
+if declare -F swap_sync_bbr_swappiness >/dev/null; then
+    fixture swap_sync
+    mkdir -p "$BBR_PROC_SYS/vm"
+    printf '60\n' > "$BBR_PROC_SYS/vm/swappiness"
+    bbr_apply_sysctl $'vm.swappiness = 10\nnet.core.wmem_max = 8192' preserve >/dev/null || fail 'prepare swappiness'
+    swap_sync_bbr_swappiness 30 >/dev/null || fail 'swap menu could not sync BBR swappiness'
+    [ "$(bbr_config_value "$(cat "$SYSCTL_FILE")" vm.swappiness)" = 30 ] || fail 'BBR file kept stale swappiness'
+    [ "$(bbr_config_value "$(cat "$SYSCTL_FILE")" net.core.wmem_max)" = 8192 ] || fail 'swappiness sync changed other BBR keys'
+fi
+
 fixture preset_missing_fallback
 bbr_tcp_set ECN on >/dev/null || fail 'initial ECN setting'
 mv "$(bbr_sysctl_path net.ipv4.tcp_ecn_fallback)" "$TEST_CASE/absent-fallback"

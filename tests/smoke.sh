@@ -441,7 +441,7 @@ EOF
     chmod +x "$TC_BIN_DIR/tc"
     cat > "$TC_HELPER" <<'EOF'
 #!/bin/sh
-# VPS_TOOLS_TC_HELPER_VERSION=2
+# VPS_TOOLS_TC_HELPER_VERSION=3
 [ "${1:-}" = apply ] || exit 1
 : > "$TC_MARKER"
 EOF
@@ -715,7 +715,7 @@ awk 'p && /^TC_HELPER_EOF$/{exit} /<< '\''TC_HELPER_EOF'\''/{p=1; next} p{print}
 awk 'p && /^CWND_HELPER_EOF$/{exit} /<< '\''CWND_HELPER_EOF'\''/{p=1; next} p{print}' "$ROOT/src/modules/bbr.sh" > "$BBR_CWND_HELPER_TEST"
 sh -n "$BBR_TC_HELPER_TEST" || { echo "Generated tc helper has syntax errors" >&2; exit 1; }
 sh -n "$BBR_CWND_HELPER_TEST" || { echo "Generated initcwnd helper has syntax errors" >&2; exit 1; }
-grep -qxF '# VPS_TOOLS_TC_HELPER_VERSION=2' "$BBR_TC_HELPER_TEST" \
+grep -qxF '# VPS_TOOLS_TC_HELPER_VERSION=3' "$BBR_TC_HELPER_TEST" \
     || { echo "Generated tc helper is missing its compatibility version" >&2; exit 1; }
 
 (
@@ -760,6 +760,92 @@ EOF
         || { echo "BBR tc persistence omitted force authorization" >&2; exit 1; }
     grep -qF '*) [ "$FORCE" -eq 1 ] || exit 1 ;;' "$TC_HELPER" \
         || { echo "Generated tc helper does not gate foreign qdisc takeover" >&2; exit 1; }
+)
+
+# A root fq with maxrate is a foreign rate limit, not a kernel default queue.
+bbr_tc_root_safe_to_replace 'qdisc fq 8001: root refcnt 2 limit 10000p flow_limit 100p' \
+    || { echo "BBR rejected a default root fq" >&2; exit 1; }
+! bbr_tc_root_safe_to_replace 'qdisc fq 8001: root refcnt 2 limit 10000p maxrate 100Mbit' \
+    || { echo "BBR treated a foreign fq maxrate limit as replaceable" >&2; exit 1; }
+(
+    HELPER_STATE="$TMP/tc-helper-fq.state"
+    HELPER_RUN="$TMP/tc-helper-fq.sh"
+    HELPER_BIN="$TMP/tc-helper-fq-bin"
+    HELPER_LOG="$TMP/tc-helper-fq.log"
+    export HELPER_LOG
+    sed "s|^STATE=.*|STATE=$HELPER_STATE|" "$BBR_TC_HELPER_TEST" > "$HELPER_RUN"
+    chmod +x "$HELPER_RUN"
+    printf 'DEV=eth0\nRATE=200\nBURST_KB=200\nFORCE=0\n' > "$HELPER_STATE"
+    mkdir -p "$HELPER_BIN"
+    cat > "$HELPER_BIN/tc" <<'EOF'
+#!/bin/sh
+if [ "$1 $2" = "qdisc show" ]; then echo 'qdisc fq 8001: root refcnt 2 limit 10000p maxrate 100Mbit'; exit 0; fi
+if [ "$1 $2" = "class show" ]; then exit 0; fi
+printf '%s\n' "$*" >> "$HELPER_LOG"
+EOF
+    chmod +x "$HELPER_BIN/tc"
+    ! PATH="$HELPER_BIN:$PATH" "$HELPER_RUN" apply \
+        || { echo "Generated tc helper overwrote a foreign fq maxrate limit" >&2; exit 1; }
+    [ ! -s "$HELPER_LOG" ] || { echo "Generated tc helper modified a foreign fq maxrate root" >&2; exit 1; }
+)
+
+# Routes from 'ip route show' must be stripped of tokens route replace rejects.
+[[ "$(bbr_route_strip_cwnd 'default via fe80::1 dev eth0 proto ra metric 1024 expires 1795sec hoplimit 64 pref medium initcwnd 50')" \
+    = 'default via fe80::1 dev eth0 proto ra metric 1024 hoplimit 64 pref medium' ]] \
+    || { echo "BBR initcwnd kept the RA expires token" >&2; exit 1; }
+[[ "$(bbr_route_strip_cwnd 'default via 192.0.2.1 dev eth0 linkdown')" = 'default via 192.0.2.1 dev eth0' ]] \
+    || { echo "BBR initcwnd kept the linkdown flag" >&2; exit 1; }
+awk 'p && /^CWND_HELPER_EOF$/{exit} /<< '\''CWND_HELPER_EOF'\''/{p=1; next} p{print}' "$ROOT/src/modules/bbr.sh" \
+    | grep -qF '$i == "expires"' || { echo "initcwnd boot helper keeps the RA expires token" >&2; exit 1; }
+
+# Moving the limit to a new default NIC must remove this tool's rule from the old NIC.
+(
+    TC_STATE_FILE="$TMP/tc-move.state"
+    printf 'DEV=eth0\nRATE=200\nBURST_KB=200\nFORCE=0\n' > "$TC_STATE_FILE"
+    TC_MOVE_LOG="$TMP/tc-move.log"
+    : > "$TC_MOVE_LOG"
+    TC_MOVE_BIN="$TMP/tc-move-bin"
+    mkdir -p "$TC_MOVE_BIN"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$TC_MOVE_LOG" > "$TC_MOVE_BIN/tc"
+    chmod +x "$TC_MOVE_BIN/tc"
+    PATH="$TC_MOVE_BIN:$PATH"
+    default_iface() { echo eth1; }
+    info() { :; }; warn() { :; }
+    bbr_tc_is_owned() { [ "$1" = eth0 ]; }
+    bbr_tc_apply_runtime() { return 0; }
+    bbr_tc_write_persistence() { printf 'DEV=%s\n' "$1" > "$TC_STATE_FILE"; }
+    bbr_apply_tc 500 >/dev/null || { echo "BBR tc move failed" >&2; exit 1; }
+    grep -qx 'qdisc del dev eth0 root' "$TC_MOVE_LOG" \
+        || { echo "BBR left an orphaned limit on the previous NIC" >&2; exit 1; }
+)
+
+# A forced removal retry must target the NIC the first attempt inspected.
+(
+    TC_STATE_FILE="$TMP/tc-remove-dev.state"
+    printf 'DEV=eth1\n' > "$TC_STATE_FILE"
+    # shellcheck disable=SC2034 # consumed indirectly by bbr_remove_tc
+    SERVICE_TC="$TMP/none.service"; SERVICE_TC_INIT="$TMP/none.init"; TC_HELPER="$TMP/none.helper"
+    TC_REMOVE_LOG="$TMP/tc-remove-dev.log"
+    : > "$TC_REMOVE_LOG"
+    TC_REMOVE_BIN="$TMP/tc-remove-dev-bin"
+    mkdir -p "$TC_REMOVE_BIN"
+    cat > "$TC_REMOVE_BIN/tc" <<EOF
+#!/bin/sh
+if [ "\$1 \$2" = "qdisc show" ]; then echo 'qdisc cake 8001: root refcnt 2 bandwidth 100Mbit'; exit 0; fi
+printf '%s\n' "\$*" >> "$TC_REMOVE_LOG"
+EOF
+    chmod +x "$TC_REMOVE_BIN/tc"
+    PATH="$TC_REMOVE_BIN:$PATH"
+    default_iface() { echo eth0; }
+    systemd_available() { return 1; }
+    info() { :; }; warn() { :; }; error() { :; }
+    bbr_tc_snapshot_foreign() { echo "$TMP/snap"; }
+    RC=0; bbr_remove_tc >/dev/null || RC=$?
+    [ "$RC" -eq 2 ] && [ "$BBR_TC_REMOVE_DEV" = eth1 ] \
+        || { echo "BBR did not report the inspected NIC for forced removal" >&2; exit 1; }
+    bbr_remove_tc 1 "$BBR_TC_REMOVE_DEV" >/dev/null
+    grep -qx 'qdisc del dev eth1 root' "$TC_REMOVE_LOG" && ! grep -q 'dev eth0' "$TC_REMOVE_LOG" \
+        || { echo "BBR forced removal targeted a different NIC" >&2; exit 1; }
 )
 
 for fn in docker_install docker_status docker_select_container docker_upgrade_container docker_container_action docker_inspect_label docker_download_file docker_compose_basename docker_compose_fetch_and_deploy; do
