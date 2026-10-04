@@ -387,6 +387,14 @@ EOF
     grep -qx 'fs.file-max = 1048576' <<< "$CONFIG" || { echo "BBR preset did not raise a low fs.file-max" >&2; exit 1; }
 )
 
+# Reserved ports must match the kernel's canonical readback (consecutive ports become ranges).
+[[ "$(printf '10443\n11101\n11102\n39000\n39001\n39002\n58585\n' | bbr_port_list_canonical)" = '10443,11101-11102,39000-39002,58585' ]] \
+    || { echo "Reserved port list is not in kernel canonical form" >&2; exit 1; }
+[[ "$(printf '8081\n8080\n100-102\n103\n70000\nbad\n' | bbr_port_list_canonical)" = '100-103,8080-8081' ]] \
+    || { echo "Reserved port list did not merge ranges or drop invalid ports" >&2; exit 1; }
+bbr_uint_greater 9223372036854775807 1048576 && ! bbr_uint_greater 1048576 9223372036854775807 \
+    || { echo "Large unsigned comparison is wrong" >&2; exit 1; }
+
 # conntrack must be loaded before systemd-sysctl and sized with hashsize = max / 4.
 (
     SYSCTL_FILE="$TMP/conntrack-bbr.conf"
