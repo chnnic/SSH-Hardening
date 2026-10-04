@@ -199,7 +199,7 @@ BANNER_COMPACT=$(COLUMNS=60 NO_COLOR=1 volcano_art_banner)
 [[ "$(COLUMNS=40 NO_COLOR=1 volcano_art_banner)" = *'IMPART OPS'* ]] || { echo "Narrow IMPART OPS banner fallback is missing" >&2; exit 1; }
 
 for fn in bbr_preflight bbr_runtime_snapshot bbr_ensure_baseline bbr_restore_runtime_snapshot bbr_baseline_value bbr_config_has_key bbr_config_value \
-    bbr_apply_sysctl bbr_generate_config bbr_physical_memory_mb bbr_effective_memory_mb bbr_buffer_cap_bytes bbr_conntrack_max_for_memory bbr_bdp_mb bbr_buffer_target_mb bbr_recommend_profile \
+    bbr_apply_sysctl bbr_generate_config bbr_physical_memory_mb bbr_effective_memory_mb bbr_buffer_cap_bytes bbr_buffer_bytes bbr_conntrack_max_for_memory bbr_bdp_mb bbr_recommend_profile \
     bbr_tc_qdisc_safe_to_replace bbr_tc_current_rate bbr_tc_owned_rate bbr_tc_saved_values bbr_tc_saved_rate_display bbr_tc_rate_display \
     bbr_tc_topology_matches bbr_tc_managed_artifact bbr_tc_is_legacy_owned bbr_tc_persistence_current bbr_tc_reconcile_saved \
     bbr_tc_snapshot_foreign bbr_tc_force_confirm bbr_tc_remove_confirm bbr_tc_apply_runtime bbr_default_route_info bbr_route_token \
@@ -340,7 +340,7 @@ EOF
     # shellcheck disable=SC2329 # test stub used indirectly by bbr_generate_config
     bbr_default_ipv6_iface() { echo eth0; }
     bbr_physical_memory_mb() { echo 512; }
-    CONFIG=$(bbr_generate_config 12582912 12582912 131072 10 relay 0)
+    CONFIG=$(bbr_generate_config 12582912 12582912 relay 0)
     grep -qx 'net.ipv4.tcp_rmem = 4096 131072 12582912' <<< "$CONFIG" || { echo "BBR receive defaults are unsafe" >&2; exit 1; }
     grep -qx 'net.ipv4.tcp_wmem = 4096 16384 12582912' <<< "$CONFIG" || { echo "BBR send defaults are unsafe" >&2; exit 1; }
     grep -qx 'net.core.somaxconn = 8192' <<< "$CONFIG" || { echo "BBR proxy concurrency settings are missing" >&2; exit 1; }
@@ -349,15 +349,115 @@ EOF
     ! grep -qE '^net\.ipv4\.ip_forward[[:space:]]*=' <<< "$CONFIG" || { echo "BBR enabled forwarding without consent" >&2; exit 1; }
     ! grep -qE '^net\.netfilter\.nf_conntrack_max[[:space:]]*=' <<< "$CONFIG" || { echo "BBR tuned conntrack while forwarding was disabled" >&2; exit 1; }
 
-    CONFIG=$(bbr_generate_config 12582912 12582912 131072 10 relay 1)
+    CONFIG=$(bbr_generate_config 12582912 12582912 relay 1)
     grep -qx 'net.ipv6.conf.default.accept_ra = 2' <<< "$CONFIG" || { echo "BBR forwarding profile missing default IPv6 accept_ra=2" >&2; exit 1; }
     grep -qx 'net.ipv6.conf.eth0.accept_ra = 2' <<< "$CONFIG" || { echo "BBR forwarding profile missing interface IPv6 accept_ra=2" >&2; exit 1; }
     grep -qx 'net.ipv4.ip_forward = 1' <<< "$CONFIG" || { echo "BBR forwarding profile missing IPv4 forwarding" >&2; exit 1; }
     grep -qx 'net.netfilter.nf_conntrack_max = 131072' <<< "$CONFIG" || { echo "BBR conntrack limit was not scaled for 512MB" >&2; exit 1; }
 )
 
+# Preset content: no swappiness, 128KB notsent, TFO follows the system, file-max is
+# never lowered, and listening high ports are reserved from the ephemeral range.
+(
+    # shellcheck disable=SC2329 # test stubs used indirectly by bbr_generate_config
+    bbr_default_ipv6_iface() { echo ''; }
+    # shellcheck disable=SC2329
+    bbr_baseline_value() { return 1; }
+    # shellcheck disable=SC2329
+    ss() { printf 'tcp LISTEN 0 4096 0.0.0.0:54321 0.0.0.0:*\nudp UNCONN 0 0 [::]:443 [::]:*\ntcp LISTEN 0 4096 [::]:20000 [::]:*\n'; }
+    FILE_MAX=9223372036854775807
+    # shellcheck disable=SC2329
+    sysctl() {
+        case "$2" in
+            fs.file-max) echo "$FILE_MAX" ;;
+            net.ipv4.ip_local_reserved_ports) echo 8080 ;;
+            *) return 1 ;;
+        esac
+    }
+    CONFIG=$(bbr_generate_config 8388608 8388608 relay 0 "")
+    ! grep -q '^vm.swappiness' <<< "$CONFIG" || { echo "BBR preset still writes vm.swappiness" >&2; exit 1; }
+    grep -qx 'net.ipv4.tcp_notsent_lowat = 131072' <<< "$CONFIG" || { echo "BBR notsent_lowat is not 128KB" >&2; exit 1; }
+    ! grep -q '^net.ipv4.tcp_fastopen' <<< "$CONFIG" || { echo "BBR preset took over TFO by default" >&2; exit 1; }
+    grep -qx 'net.ipv4.tcp_mtu_probing = 1' <<< "$CONFIG" || { echo "BBR preset lost MTU probing default" >&2; exit 1; }
+    ! grep -q '^fs.file-max' <<< "$CONFIG" || { echo "BBR preset lowered a larger fs.file-max" >&2; exit 1; }
+    grep -qx 'net.ipv4.ip_local_reserved_ports = 8080,20000,54321' <<< "$CONFIG" \
+        || { echo "BBR preset did not reserve listening high ports" >&2; exit 1; }
+    FILE_MAX=65536
+    CONFIG=$(bbr_generate_config 8388608 8388608 relay 0 "")
+    grep -qx 'fs.file-max = 1048576' <<< "$CONFIG" || { echo "BBR preset did not raise a low fs.file-max" >&2; exit 1; }
+)
+
+# conntrack must be loaded before systemd-sysctl and sized with hashsize = max / 4.
+(
+    SYSCTL_FILE="$TMP/conntrack-bbr.conf"
+    BBR_MODULES_LOAD_FILE="$TMP/conntrack-ml/vps-tools-conntrack.conf"
+    BBR_MODPROBE_FILE="$TMP/conntrack-mp/vps-tools-conntrack.conf"
+    BBR_CONNTRACK_HASHSIZE="$TMP/conntrack-hashsize"
+    : > "$BBR_CONNTRACK_HASHSIZE"
+    info() { :; }; warn() { :; }
+    printf 'net.netfilter.nf_conntrack_max = 262144\n' > "$SYSCTL_FILE"
+    bbr_conntrack_sync_persistence
+    grep -qx 'nf_conntrack' "$BBR_MODULES_LOAD_FILE" || { echo "conntrack is not loaded at boot" >&2; exit 1; }
+    grep -qx 'options nf_conntrack hashsize=65536' "$BBR_MODPROBE_FILE" || { echo "conntrack hashsize not persisted" >&2; exit 1; }
+    [ "$(cat "$BBR_CONNTRACK_HASHSIZE")" = 65536 ] || { echo "conntrack hashsize not applied at runtime" >&2; exit 1; }
+    printf 'net.core.rmem_max = 8388608\n' > "$SYSCTL_FILE"
+    bbr_conntrack_sync_persistence
+    [ ! -e "$BBR_MODULES_LOAD_FILE" ] && [ ! -e "$BBR_MODPROBE_FILE" ] \
+        || { echo "conntrack boot files left after leaving the relay preset" >&2; exit 1; }
+)
+
+# Existing NIC queues switch to fq only when they are kernel defaults.
+(
+    QDISC_LOG="$TMP/qdisc-refresh.log"
+    QDISC_BIN="$TMP/qdisc-refresh-bin"
+    QDISC_SHOW="$TMP/qdisc-refresh.show"
+    export QDISC_LOG QDISC_SHOW
+    mkdir -p "$QDISC_BIN"
+    cat > "$QDISC_BIN/tc" <<'EOF'
+#!/bin/sh
+if [ "$1 $2" = "qdisc show" ]; then cat "$QDISC_SHOW"; exit 0; fi
+printf '%s\n' "$*" >> "$QDISC_LOG"
+EOF
+    chmod +x "$QDISC_BIN/tc"
+    PATH="$QDISC_BIN:$PATH"
+    # shellcheck disable=SC2329 # test stubs used indirectly by bbr_refresh_root_qdisc
+    sysctl() { [ "$2" = net.core.default_qdisc ] && echo fq; }
+    # shellcheck disable=SC2329
+    default_iface() { echo eth0; }
+    # shellcheck disable=SC2329
+    bbr_tc_is_owned() { return 1; }
+    info() { :; }; warn() { :; }
+    printf 'qdisc mq 0: root\nqdisc fq_codel 0: parent :1 limit 10240p\nqdisc fq_codel 0: parent :2 limit 10240p\n' > "$QDISC_SHOW"
+    : > "$QDISC_LOG"; bbr_refresh_root_qdisc <<< y >/dev/null
+    grep -qx 'qdisc replace dev eth0 parent :1 fq' "$QDISC_LOG" && grep -qx 'qdisc replace dev eth0 parent :2 fq' "$QDISC_LOG" \
+        || { echo "mq child queues were not switched to fq" >&2; exit 1; }
+    printf 'qdisc fq_codel 0: root refcnt 2 limit 10240p\n' > "$QDISC_SHOW"
+    : > "$QDISC_LOG"; bbr_refresh_root_qdisc <<< y >/dev/null
+    grep -qx 'qdisc replace dev eth0 root fq' "$QDISC_LOG" || { echo "root fq_codel was not switched to fq" >&2; exit 1; }
+    printf 'qdisc cake 8001: root refcnt 2 bandwidth 100Mbit\n' > "$QDISC_SHOW"
+    : > "$QDISC_LOG"; bbr_refresh_root_qdisc <<< y >/dev/null
+    [ ! -s "$QDISC_LOG" ] || { echo "foreign CAKE qdisc was replaced" >&2; exit 1; }
+)
+
+# A legacy BBR-managed swappiness is handed to sysctl.conf exactly once.
+(
+    BBR_SYSCTL_MAIN="$TMP/handoff-sysctl.conf"
+    : > "$BBR_SYSCTL_MAIN"
+    # shellcheck disable=SC2329 # test stub used indirectly by bbr_handoff_swappiness
+    sysctl() { [ "$2" = vm.swappiness ] && echo 10; }
+    info() { :; }; warn() { :; }
+    bbr_handoff_swappiness $'vm.swappiness = 10\nnet.core.rmem_max = 1'
+    bbr_handoff_swappiness $'vm.swappiness = 10\nnet.core.rmem_max = 1'
+    [ "$(grep -c '^vm.swappiness = 10$' "$BBR_SYSCTL_MAIN")" -eq 1 ] \
+        || { echo "BBR swappiness was not handed off exactly once" >&2; exit 1; }
+)
+
 [[ "$(bbr_effective_memory_mb 16384 512)" = 512 ]] || { echo "BBR memory selection was not clamped to physical RAM" >&2; exit 1; }
-[[ "$(bbr_buffer_cap_bytes 512)" = 134217728 ]] || { echo "BBR buffer cap is not 25 percent of RAM" >&2; exit 1; }
+[[ "$(bbr_buffer_cap_bytes 512)" = 33554432 ]] || { echo "BBR per-connection buffer cap is not 1/16 of RAM" >&2; exit 1; }
+[[ "$(bbr_buffer_bytes 1000 150 4096)" = 41943040 ]] || { echo "BBR 2xBDP buffer for 1Gbps/150ms is not 40MB" >&2; exit 1; }
+[[ "$(bbr_buffer_bytes 100 50 4096)" = 8388608 ]] || { echo "BBR small-BDP buffer floor is not 8MB" >&2; exit 1; }
+[[ "$(bbr_buffer_bytes 10000 250 1024)" = 67108864 ]] || { echo "BBR buffer was not capped at RAM/16" >&2; exit 1; }
+! bbr_managed_keys | grep -qx 'vm.swappiness' || { echo "BBR still manages vm.swappiness" >&2; exit 1; }
 ! bbr_managed_keys | grep -qx 'vm.min_free_kbytes' || { echo "BBR retired settings could be captured as a new baseline" >&2; exit 1; }
 [[ "$(bbr_conntrack_max_for_memory 512)" = 131072 ]] || { echo "BBR 512MB conntrack tier is wrong" >&2; exit 1; }
 [[ "$(bbr_conntrack_max_for_memory 1024)" = 262144 ]] || { echo "BBR 1GB conntrack tier is wrong" >&2; exit 1; }
@@ -366,15 +466,15 @@ EOF
 
 (
     bbr_physical_memory_mb() { echo 512; }
-    bbr_confirm_apply() { printf '%s %s %s %s\n' "$1" "$2" "$3" "$4"; }
+    bbr_confirm_apply() { printf '%s %s\n' "$1" "$2"; }
     AUTO_RESULT=$(bbr_auto_calc 16384 250 10240 16GB+ 200ms以上 10Gbps)
     AUTO_PARAMS=$(tail -n 1 <<< "$AUTO_RESULT")
-    [[ "$AUTO_PARAMS" = '134217728 134217728 2097152 10' ]] \
+    [[ "$AUTO_PARAMS" = '33554432 33554432' ]] \
         || { echo "BBR 512MB auto calculation trusted a 16GB selection: $AUTO_PARAMS" >&2; exit 1; }
     for PROFILE in balanced latency throughput relay landing line_landing; do
-        PROFILE_PARAMS=$(volcano_tcp_profile "$PROFILE")
+        PROFILE_PARAMS=$(volcano_tcp_profile "$PROFILE" | tail -n 1)
         PROFILE_RMEM=${PROFILE_PARAMS%% *}
-        [ "$PROFILE_RMEM" -le 134217728 ] \
+        [ "$PROFILE_RMEM" -le 33554432 ] \
             || { echo "BBR profile $PROFILE exceeded the physical-memory buffer cap" >&2; exit 1; }
     done
 )
@@ -705,7 +805,6 @@ EOF
     }
 )
 [[ "$(bbr_bdp_mb 100 50)" != "0.00" ]] || { echo "BBR BDP estimate was truncated to zero" >&2; exit 1; }
-[[ "$(bbr_buffer_target_mb 100 50)" = "1" ]] || { echo "BBR BDP buffer target rounding failed" >&2; exit 1; }
 [[ "$(bbr_recommend_profile 4095)" = balanced ]] || { echo "BBR sub-4GB recommendation changed unexpectedly" >&2; exit 1; }
 [[ "$(bbr_recommend_profile 4096)" = throughput ]] || { echo "BBR 4GB recommendation does not match documentation" >&2; exit 1; }
 
@@ -823,8 +922,10 @@ awk 'p && /^CWND_HELPER_EOF$/{exit} /<< '\''CWND_HELPER_EOF'\''/{p=1; next} p{pr
 (
     TC_STATE_FILE="$TMP/tc-remove-dev.state"
     printf 'DEV=eth1\n' > "$TC_STATE_FILE"
+    SERVICE_TC="$TMP/none.service"
     # shellcheck disable=SC2034 # consumed indirectly by bbr_remove_tc
-    SERVICE_TC="$TMP/none.service"; SERVICE_TC_INIT="$TMP/none.init"; TC_HELPER="$TMP/none.helper"
+    SERVICE_TC_INIT="$TMP/none.init"
+    TC_HELPER="$TMP/none.helper"
     TC_REMOVE_LOG="$TMP/tc-remove-dev.log"
     : > "$TC_REMOVE_LOG"
     TC_REMOVE_BIN="$TMP/tc-remove-dev-bin"
