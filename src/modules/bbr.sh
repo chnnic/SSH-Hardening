@@ -432,38 +432,76 @@ bbr_tcp_without_group() {
 }
 
 bbr_tcp_set() {
-    local GROUP="$1" MODE="$2" CONFIG="" ORIGINAL_CONFIG RESTORE="" KEYS KEY VALUE
-    KEYS=$(bbr_tcp_keys "$GROUP") || return 1
+    bbr_tcp_set_groups "$2" "$1"
+}
+
+# 多个分组在同一事务内写入：任一参数不支持或写入失败都整体回滚，不会只改一半。
+bbr_tcp_set_groups() {
+    local MODE="$1" GROUP CONFIG="" ORIGINAL_CONFIG RESTORE="" KEYS="" GROUP_KEYS KEY VALUE
+    shift
     case "$MODE" in on|off|system) ;; *) return 1 ;; esac
+    [ "$#" -gt 0 ] || return 1
     [ ! -f "$SYSCTL_FILE" ] || CONFIG=$(cat "$SYSCTL_FILE")
     ORIGINAL_CONFIG="$CONFIG"
-    # 恢复时缺少已管理键的基线必须停止，不能猜测内核默认值。
-    if [ "$MODE" = system ]; then
-        for KEY in $KEYS; do
-            if bbr_config_has_key "$CONFIG" "$KEY"; then
-                VALUE=$(bbr_baseline_value "$KEY" 2>/dev/null) || {
-                    error "缺少 ${KEY} 的首次基线，无法恢复原值"
-                    return 1
-                }
-                RESTORE="${RESTORE}${KEY} = ${VALUE}"$'\n'
-            fi
-        done
-    fi
-    CONFIG=$(bbr_tcp_without_group "$CONFIG" "$GROUP") || return 1
-    if [ "$MODE" = system ]; then
-        CONFIG="${CONFIG}"$'\n'"# VPS_TOOLS_TCP_${GROUP}=system"
-    else
-        CONFIG="${CONFIG}"$'\n'"# VPS_TOOLS_TCP_${GROUP}=managed"
-        for KEY in $KEYS; do
-            VALUE=0
-            if [ "$MODE" = on ]; then
-                case "$GROUP" in TFO) VALUE=3 ;; *) VALUE=1 ;; esac
-            fi
-            [ "$KEY" != net.ipv4.tcp_ecn_fallback ] || VALUE=1
-            CONFIG="${CONFIG}"$'\n'"${KEY} = ${VALUE}"
-        done
-    fi
+    for GROUP in "$@"; do
+        GROUP_KEYS=$(bbr_tcp_keys "$GROUP") || return 1
+        KEYS="${KEYS}${GROUP_KEYS}"$'\n'
+        # 恢复时缺少已管理键的基线必须停止，不能猜测内核默认值。
+        if [ "$MODE" = system ]; then
+            for KEY in $GROUP_KEYS; do
+                if bbr_config_has_key "$CONFIG" "$KEY"; then
+                    VALUE=$(bbr_baseline_value "$KEY" 2>/dev/null) || {
+                        error "缺少 ${KEY} 的首次基线，无法恢复原值"
+                        return 1
+                    }
+                    RESTORE="${RESTORE}${KEY} = ${VALUE}"$'\n'
+                fi
+            done
+        fi
+        CONFIG=$(bbr_tcp_without_group "$CONFIG" "$GROUP") || return 1
+        if [ "$MODE" = system ]; then
+            CONFIG="${CONFIG}"$'\n'"# VPS_TOOLS_TCP_${GROUP}=system"
+        else
+            CONFIG="${CONFIG}"$'\n'"# VPS_TOOLS_TCP_${GROUP}=managed"
+            for KEY in $GROUP_KEYS; do
+                VALUE=0
+                if [ "$MODE" = on ]; then
+                    case "$GROUP" in TFO) VALUE=3 ;; *) VALUE=1 ;; esac
+                fi
+                [ "$KEY" != net.ipv4.tcp_ecn_fallback ] || VALUE=1
+                CONFIG="${CONFIG}"$'\n'"${KEY} = ${VALUE}"
+            done
+        fi
+    done
+    KEYS=$(printf '%s' "$KEYS" | awk 'NF')
     bbr_apply_sysctl "$CONFIG" preserve "$RESTORE" "$KEYS" "$KEYS" "$ORIGINAL_CONFIG"
+}
+
+# 一键推荐：TFO=3、ECN=1 + fallback=1、MTU=1。先列出当前值与目标值再确认。
+bbr_tcp_apply_recommended() {
+    local GROUP KEY CURRENT TARGET ANSWER
+    echo ""
+    menu_div
+    echo "  一键推荐将同时设置："
+    for GROUP in TFO ECN MTU; do
+        for KEY in $(bbr_tcp_keys "$GROUP"); do
+            case "$KEY" in net.ipv4.tcp_fastopen) TARGET=3 ;; *) TARGET=1 ;; esac
+            CURRENT=$(sysctl -n "$KEY" 2>/dev/null || echo 不可读)
+            printf '    %-28s %s → %s（%s）\n' "$KEY" "$CURRENT" "$TARGET" "$(bbr_tcp_value_description "$KEY" "$TARGET")"
+        done
+    done
+    echo "  TFO 需应用支持；ECN 需对端与链路兼容，异常时由 fallback 回退。"
+    echo "  三项在同一事务内写入，任一项不支持或失败都会整体回滚。"
+    menu_div
+    read -rp "  确认应用推荐设置？(Y/n，默认Y): " ANSWER || ANSWER=n
+    [ -z "$ANSWER" ] && ANSWER=y
+    printf '%s\n' "$ANSWER" | grep -qiE '^y(es)?$' || { warn "已取消"; return 0; }
+    if bbr_tcp_set_groups on TFO ECN MTU; then
+        info "已应用推荐设置：TFO=3 · ECN=1 + fallback=1 · MTU=1 ✓"
+    else
+        warn "推荐设置未应用，所有参数保持原值，请查看上方原因"
+        return 1
+    fi
 }
 
 bbr_tcp_value_description() {
@@ -533,10 +571,12 @@ bbr_tcp_menu() {
         menu_item "1" "TCP Fast Open"
         menu_item "2" "ECN + fallback"
         menu_item "3" "MTU 黑洞探测"
+        menu_item "4" "一键推荐  ${DIM}TFO 3 · ECN 1 + fallback 1 · MTU 1${NC}"
         menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
-        menu_read CH '选择 [0-3]: ' || return 0
+        menu_read CH '选择 [0-4]: ' || return 0
         case "$CH" in
             1) GROUP=TFO ;; 2) GROUP=ECN ;; 3) GROUP=MTU ;;
+            4) bbr_tcp_apply_recommended; ui_pause; continue ;;
             0) return ;; 00) exit 0 ;; *) continue ;;
         esac
         case "$GROUP" in

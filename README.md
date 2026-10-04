@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.13.1
+# VPS 开荒脚本 V3.13.2
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -16,7 +16,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 ### 离线安装包
 
-适合不能访问 GitHub 的中国内地 VPS。以下下载与当前脚本一致的 **V3.13.1** 离线包。每次脚本版本更新都会一并构建、校验和发布对应离线包，并同步本节的下载链接。
+适合不能访问 GitHub 的中国内地 VPS。以下下载与当前脚本一致的 **V3.13.2** 离线包。每次脚本版本更新都会一并构建、校验和发布对应离线包，并同步本节的下载链接。
 
 **方式一：中国内地 VPS 通过加速链接直接下载**
 
@@ -24,12 +24,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 ```bash
 cd /root
-curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.1/vps-tools-offline-V3.13.1.tar.gz
-curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.1/vps-tools-offline-V3.13.1.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.13.1.tar.gz.sha256
+curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.2/vps-tools-offline-V3.13.2.tar.gz
+curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.2/vps-tools-offline-V3.13.2.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.13.2.tar.gz.sha256
 ```
 
-也可以点击下载：[离线安装包（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.1/vps-tools-offline-V3.13.1.tar.gz) · [SHA256 校验文件（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.1/vps-tools-offline-V3.13.1.tar.gz.sha256)。
+也可以点击下载：[离线安装包（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.2/vps-tools-offline-V3.13.2.tar.gz) · [SHA256 校验文件（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.2/vps-tools-offline-V3.13.2.tar.gz.sha256)。
 
 > 加速服务由第三方提供，可用性取决于当地网络；若不可用，请使用下方直连下载后上传的方式。SHA256 用于完整性核验；包和校验文件都来自同一镜像时，不能独立证明来源可信，安全要求较高时应从 GitHub 或其他可信渠道另行获取校验值。校验失败时不要继续安装。
 
@@ -38,24 +38,24 @@ sha256sum -c vps-tools-offline-V3.13.1.tar.gz.sha256
 先在一台可以访问 GitHub 的电脑或跳板机下载：
 
 ```bash
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.1/vps-tools-offline-V3.13.1.tar.gz
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.1/vps-tools-offline-V3.13.1.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.13.1.tar.gz.sha256
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.2/vps-tools-offline-V3.13.2.tar.gz
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.2/vps-tools-offline-V3.13.2.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.13.2.tar.gz.sha256
 ```
 
 再通过 `scp`、SFTP 或 WinSCP 将两个文件传到 VPS。Linux/macOS 示例：
 
 ```bash
-scp vps-tools-offline-V3.13.1.tar.gz* root@你的VPS地址:/root/
+scp vps-tools-offline-V3.13.2.tar.gz* root@你的VPS地址:/root/
 ```
 
 方式一直接下载或方式二上传完成后，确认两个文件都在 VPS 的 `/root` 目录，登录 VPS 后离线安装：
 
 ```bash
 cd /root
-sha256sum -c vps-tools-offline-V3.13.1.tar.gz.sha256
-tar -xzf vps-tools-offline-V3.13.1.tar.gz
-cd vps-tools-offline-V3.13.1
+sha256sum -c vps-tools-offline-V3.13.2.tar.gz.sha256
+tar -xzf vps-tools-offline-V3.13.2.tar.gz
+cd vps-tools-offline-V3.13.2
 bash install.sh
 v
 ```
@@ -255,6 +255,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 **TCP 增强（BBR 菜单 → `9`）：**
 - TFO、ECN + fallback、MTU 黑洞探测分别提供启用、关闭、恢复首次基线并退出管理
+- `4` 一键推荐：同时设置 TFO=`3`、ECN=`1` + fallback=`1`、MTU=`1`；先列出每项当前值与目标值再确认，三项在同一事务内写入，任一参数不支持或写入失败都整体回滚
 - 预设默认只管理 MTU（`1`，按需探测）；TFO 与 ECN 默认保留系统策略，需在本菜单明确启用后才写入。ECN 启用时同时设置 `tcp_ecn=1`、`tcp_ecn_fallback=1`，缺少任一参数则整次取消
 - 独立开关只修改所选参数；增强偏好与 sysctl 写在同一文件，切换自动/手动/场景预设后仍然保留
 - 恢复原值后写入退出管理标记，后续预设不会重新启用该项；旧安装若缺少真实基线则拒绝猜测原值
@@ -721,6 +722,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.13.2** | TCP 增强新增“一键推荐”：TFO=3、ECN=1 + fallback=1、MTU=1 同一事务写入，先显示当前值与目标值并确认，任一项不支持则整体回滚；同步 BBR 独立版和离线包 |
 | **V3.13.1** | 修复场景预设在监听端口含连续端口时整次失败：`ip_local_reserved_ports` 按内核回读格式合并区间后写入；`fs.file-max` 原值更大时自动恢复，不再询问；“不再管理的场景参数”提示显示当前值与原值；swappiness 仅在配置应用成功后才移交 sysctl.conf。同步 BBR 独立版和离线包 |
 | **V3.13.0** | BBR 配置内容重整：缓冲改为 min(2×BDP, 内存/16)，预设按典型带宽/RTT 估算；`tcp_notsent_lowat` 统一 128KB；TFO 默认跟随系统；swappiness 移交 Swap 菜单管理；`fs.file-max` 只升不降；场景预设保留监听中的高位端口；conntrack 开机预加载并设置哈希桶；应用后可将默认网卡切换为 fq。修复：还原备份前单独确认转发 / RA 改动；initcwnd 支持 IPv6 RA 路由；带 maxrate 的 root fq 识别为外部限速；换默认网卡后清理旧网卡限速；强制删除外部限速沿用检测到的网卡。同步 BBR 独立版和离线包 |
 | **V3.12.11** | 安全审查修复：移除可被本机用户替换的 /tmp 安装缓存，自更新改用私有临时目录；SSH 改端口时注释原有 Port 行并核对实际监听，支持 Ubuntu 22.10+ ssh.socket；防断联回滚改为只重载脚本托管的 nft 表（不再清空 ufw/Docker 规则）、兼容 OpenRC，且不会覆盖或悄悄取消上一项未确认的回滚；Fail2ban 跟随实际 SSH 端口；粘贴多把公钥时逐行校验去重 |
