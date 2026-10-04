@@ -192,6 +192,33 @@ bbr_tcp_set MTU on >/dev/null || fail 'enable MTU'
 bbr_tcp_set MTU system >/dev/null || fail 'restore MTU'
 [ "$(sysctl -n net.ipv4.tcp_mtu_probing)" = 0 ] || fail 'MTU did not restore original value'
 
+fixture tcp_recommended
+bbr_tcp_apply_recommended <<< y >/dev/null || fail 'one-click recommended settings'
+[ "$(sysctl -n net.ipv4.tcp_fastopen)" = 3 ] || fail 'recommended TFO not applied'
+[ "$(sysctl -n net.ipv4.tcp_ecn)" = 1 ] || fail 'recommended ECN not applied'
+[ "$(sysctl -n net.ipv4.tcp_ecn_fallback)" = 1 ] || fail 'recommended ECN fallback not applied'
+[ "$(sysctl -n net.ipv4.tcp_mtu_probing)" = 1 ] || fail 'recommended MTU not applied'
+for GROUP in TFO ECN MTU; do
+    grep -qx "# VPS_TOOLS_TCP_${GROUP}=managed" "$SYSCTL_FILE" || fail "recommended $GROUP preference not persisted"
+done
+CONFIG=$(bbr_generate_config 8192 8192 balanced 0)
+[ "$(bbr_config_value "$CONFIG" net.ipv4.tcp_fastopen)" = 3 ] || fail 'preset dropped recommended TFO'
+
+fixture tcp_recommended_cancel
+bbr_tcp_apply_recommended <<< n >/dev/null || fail 'cancelling recommended settings failed'
+[ ! -s "$WRITE_LOG" ] || fail 'cancelled recommended settings wrote runtime'
+cmp -s "$SYSCTL_FILE" "$TEST_CASE/original.conf" || fail 'cancelled recommended settings changed persistence'
+(
+    bbr_tcp_set_groups() { fail 'recommended menu cancel still applied'; }
+    bbr_tcp_menu <<< $'4\nn\n0\n0' >/dev/null
+)
+
+fixture tcp_recommended_atomic
+mv "$(bbr_sysctl_path net.ipv4.tcp_ecn_fallback)" "$TEST_CASE/absent-fallback"
+! bbr_tcp_apply_recommended <<< y >/dev/null 2>&1 || fail 'recommended settings ignored missing ECN fallback'
+[ ! -s "$WRITE_LOG" ] || fail 'partial recommended settings changed runtime'
+cmp -s "$SYSCTL_FILE" "$TEST_CASE/original.conf" || fail 'partial recommended settings persisted'
+
 fixture missing_fallback
 mv "$(bbr_sysctl_path net.ipv4.tcp_ecn_fallback)" "$TEST_CASE/absent-fallback"
 ! bbr_tcp_set ECN on >/dev/null 2>&1 || fail 'enabled ECN without supported fallback'
