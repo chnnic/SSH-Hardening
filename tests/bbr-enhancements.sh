@@ -167,13 +167,13 @@ cmp -s "$SYSCTL_FILE" "$TEST_CASE/display-before.conf" || fail 'status display c
 cmp -s "$BBR_BASELINE_FILE" "$TEST_CASE/display-before.baseline" || fail 'status display changed baseline'
 
 fixture preferences
-CONFIG=$(bbr_generate_config 8192 8192 4096 10 balanced 0)
+CONFIG=$(bbr_generate_config 8192 8192 balanced 0)
 ! bbr_config_has_key "$CONFIG" net.ipv4.tcp_ecn || fail 'default profile enabled ECN'
 bbr_tcp_set TFO off >/dev/null || fail 'disable TFO'
 bbr_tcp_set ECN on >/dev/null || fail 'enable ECN pair'
 [ "$(sysctl -n net.ipv4.tcp_ecn)" = 1 ] || fail 'ECN did not enable'
 [ "$(sysctl -n net.ipv4.tcp_ecn_fallback)" = 1 ] || fail 'ECN fallback did not enable'
-CONFIG=$(bbr_generate_config 8192 8192 4096 10 balanced 0)
+CONFIG=$(bbr_generate_config 8192 8192 balanced 0)
 [ "$(bbr_config_value "$CONFIG" net.ipv4.tcp_fastopen)" = 0 ] || fail 'preset lost TFO off'
 [ "$(bbr_config_value "$CONFIG" net.ipv4.tcp_ecn)" = 1 ] || fail 'preset lost ECN on'
 bbr_apply_sysctl "$CONFIG" baseline >/dev/null || fail 'preset with enhancement preferences'
@@ -182,7 +182,7 @@ bbr_tcp_set TFO system >/dev/null || fail 'restore original TFO'
 bbr_tcp_set ECN system >/dev/null || fail 'restore ECN pair'
 [ "$(sysctl -n net.ipv4.tcp_ecn)" = 2 ] || fail 'ECN original value lost'
 [ "$(sysctl -n net.ipv4.tcp_ecn_fallback)" = 0 ] || fail 'fallback original value lost'
-CONFIG=$(bbr_generate_config 16384 16384 4096 10 throughput 0)
+CONFIG=$(bbr_generate_config 16384 16384 throughput 0)
 ! bbr_config_has_key "$CONFIG" net.ipv4.tcp_fastopen || fail 'preset took over restored TFO'
 ! bbr_config_has_key "$CONFIG" net.ipv4.tcp_ecn || fail 'preset took over restored ECN'
 bbr_apply_sysctl "$CONFIG" baseline >/dev/null || fail 'preset after restore'
@@ -207,7 +207,7 @@ bbr_tcp_set TFO on >/dev/null || fail 'change TFO after backup'
 printf '1\n' | bbr_restore_sysctl >/dev/null || fail 'restore preferences snapshot'
 [ "$(sysctl -n net.ipv4.tcp_ecn)" = 1 ] || fail 'backup lost enabled ECN'
 [ "$(sysctl -n net.ipv4.tcp_fastopen)" = 1 ] || fail 'backup lost original TFO runtime'
-CONFIG=$(bbr_generate_config 8192 8192 4096 10 balanced 0)
+CONFIG=$(bbr_generate_config 8192 8192 balanced 0)
 [ "$(bbr_config_value "$CONFIG" net.ipv4.tcp_ecn)" = 1 ] || fail 'backup lost ECN management preference'
 ! bbr_config_has_key "$CONFIG" net.ipv4.tcp_fastopen || fail 'backup lost TFO system preference'
 
@@ -233,7 +233,7 @@ fi
 fixture preset_missing_fallback
 bbr_tcp_set ECN on >/dev/null || fail 'initial ECN setting'
 mv "$(bbr_sysctl_path net.ipv4.tcp_ecn_fallback)" "$TEST_CASE/absent-fallback"
-CONFIG=$(bbr_generate_config 8192 8192 4096 10 balanced 0)
+CONFIG=$(bbr_generate_config 8192 8192 balanced 0)
 : > "$WRITE_LOG"
 ! bbr_apply_sysctl "$CONFIG" baseline >/dev/null 2>&1 || fail 'preset accepted half an ECN pair'
 [ ! -s "$WRITE_LOG" ] || fail 'incomplete preset changed runtime'
@@ -249,7 +249,7 @@ printf 'net.ipv4.tcp_ecn = 1\n' >> "$SYSCTL_FILE"
 printf '1\n' > "$(bbr_sysctl_path net.ipv4.tcp_ecn)"
 bbr_ensure_baseline
 ! bbr_baseline_value net.ipv4.tcp_ecn >/dev/null || fail 'legacy tuned value presented as original ECN'
-CONFIG=$(bbr_generate_config 8192 8192 4096 10 balanced 0)
+CONFIG=$(bbr_generate_config 8192 8192 balanced 0)
 bbr_apply_sysctl "$CONFIG" baseline >/dev/null || fail 'legacy ECN migration'
 [ "$(sysctl -n net.ipv4.tcp_ecn)" = 1 ] || fail 'legacy ECN baseline was guessed'
 
@@ -267,7 +267,7 @@ printf '262144\n' > "$BBR_PROC_SYS/vm/min_free_kbytes"
 printf '1\n' > "$BBR_PROC_SYS/net/ipv4/tcp_tw_reuse"
 printf 'vm.min_free_kbytes = 262144\nnet.ipv4.tcp_tw_reuse = 1\n' >> "$SYSCTL_FILE"
 printf 'vm.min_free_kbytes = 32768\nnet.ipv4.tcp_tw_reuse = 2\n' > "$BBR_BASELINE_FILE"
-CONFIG=$(bbr_generate_config 8192 8192 4096 10 balanced 0)
+CONFIG=$(bbr_generate_config 8192 8192 balanced 0)
 bbr_apply_sysctl "$CONFIG" baseline >/dev/null || fail 'retired parameter migration'
 [ "$(sysctl -n vm.min_free_kbytes)" = 32768 ] || fail 'retired min_free_kbytes not restored'
 [ "$(sysctl -n net.ipv4.tcp_tw_reuse)" = 2 ] || fail 'retired tcp_tw_reuse not restored'
@@ -367,7 +367,7 @@ bbr_tcp_set TFO on >/dev/null || fail 'SIGKILL left a stale kernel lock'
 fixture absent_restore
 printf 'net.ipv4.tcp_adv_win_scale = 2\nnet.ipv6.conf.old0.accept_ra = 2\n' >> "$SYSCTL_FILE"
 printf 'net.ipv4.tcp_adv_win_scale = 1\nnet.ipv6.conf.old0.accept_ra = 1\n' > "$BBR_BASELINE_FILE"
-CONFIG=$(bbr_generate_config 8192 8192 4096 10 balanced 0)
+CONFIG=$(bbr_generate_config 8192 8192 balanced 0)
 bbr_apply_sysctl "$CONFIG" baseline >/dev/null || fail 'obsolete restore blocked migration'
 ! grep -qE '^(net.ipv4.tcp_adv_win_scale|net.ipv6.conf.old0.accept_ra)=' "$WRITE_LOG" || fail 'wrote an absent restore key'
 ! bbr_config_has_key "$(cat "$SYSCTL_FILE")" net.ipv6.conf.old0.accept_ra || fail 'retained obsolete interface'
@@ -379,7 +379,7 @@ printf '65536\n' > "$BBR_PROC_SYS/vm/min_free_kbytes"
 printf 'vm.min_free_kbytes = 65536\n' >> "$SYSCTL_FILE"
 cp "$SYSCTL_FILE" "$TEST_CASE/before.conf"
 BBR_FAIL_WRITE=vm.min_free_kbytes=32768
-CONFIG=$(bbr_generate_config 8192 8192 4096 10 balanced 0)
+CONFIG=$(bbr_generate_config 8192 8192 balanced 0)
 ! bbr_apply_sysctl "$CONFIG" baseline >/dev/null 2>&1 || fail 'restore permission failure was skipped'
 cmp -s "$SYSCTL_FILE" "$TEST_CASE/before.conf" || fail 'restore permission failure persisted'
 
@@ -447,7 +447,7 @@ BBR_SIDE_EFFECT=net.core.wmem_max=4096
 fixture dotted_interface_profile
 (
     bbr_default_ipv6_iface() { echo eth0.100; }
-    CONFIG=$(bbr_generate_config 8192 8192 4096 10 relay 1)
+    CONFIG=$(bbr_generate_config 8192 8192 relay 1)
     bbr_config_has_key "$CONFIG" net.ipv6.conf.eth0/100.accept_ra || fail 'dotted RA key not escaped'
 )
 
@@ -465,7 +465,7 @@ bbr_tcp_set TFO off >/dev/null
         bbr_tcp_set TFO on >/dev/null
         printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_fastopen = 0\n'
     }
-    ! bbr_confirm_apply 8192 8192 4096 10 test test balanced <<< $'n\ny' >/dev/null 2>&1 || fail 'preset overwrote concurrent toggle'
+    ! bbr_confirm_apply 8192 8192 test test balanced <<< $'n\ny' >/dev/null 2>&1 || fail 'preset overwrote concurrent toggle'
 )
 [ "$(sysctl -n net.ipv4.tcp_fastopen)" = 3 ] || fail 'concurrent TFO preference lost'
 [ "$(bbr_config_value "$(cat "$SYSCTL_FILE")" net.ipv4.tcp_fastopen)" = 3 ] || fail 'concurrent preference persistence lost'
@@ -473,8 +473,8 @@ bbr_tcp_set TFO off >/dev/null
 fixture consistent_generation
 ORIGINAL=$(cat "$SYSCTL_FILE")
 bbr_tcp_set TFO off >/dev/null
-CONFIG=$(bbr_generate_config 8192 8192 4096 10 balanced 0 "$ORIGINAL")
-[ "$(bbr_config_value "$CONFIG" net.ipv4.tcp_fastopen)" = 3 ] || fail 'generation reread preferences outside captured version'
+CONFIG=$(bbr_generate_config 8192 8192 balanced 0 "$ORIGINAL")
+! bbr_config_has_key "$CONFIG" net.ipv4.tcp_fastopen || fail 'generation reread preferences outside captured version'
 
 fixture diagnostics
 mkdir -p "$TEST_CASE/etc" "$TEST_CASE/usr" "$BBR_PROC_NET"
