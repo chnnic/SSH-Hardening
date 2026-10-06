@@ -252,8 +252,8 @@ ufw_menu() {
                     pkg_remove ufw
                     # 清理残留文件（防止重装时读到旧配置）
                     rm -rf /etc/ufw /lib/ufw /usr/share/ufw 2>/dev/null
-                    clear_iptables_residue  # 清理 iptables 残留规则
-                    info "ufw 已完整卸载 ✓（仅清理 ufw 自身规则，SSH 仍可连接）"
+                    # 不删除 INPUT 中的 SSH 放行规则：它们可能是用户自有规则，删掉会挡住新的 SSH 连接。
+                    info "ufw 已完整卸载 ✓（仅清理 ufw 自身规则，其它 iptables 规则未改动）"
                     return
                 else
                     warn "已取消"
@@ -437,8 +437,8 @@ fwd_menu() {
                     pkg_remove firewalld
                     # 清理残留配置
                     rm -rf /etc/firewalld/zones /etc/firewalld/services 2>/dev/null
-                    clear_iptables_residue  # 清理 iptables 残留规则
-                    info "firewalld 已完整卸载 ✓（仅清理 firewalld 自身规则）"
+                    # 不删除 INPUT 中的 SSH 放行规则：它们可能是用户自有规则，删掉会挡住新的 SSH 连接。
+                    info "firewalld 已完整卸载 ✓（仅清理 firewalld 自身规则，其它 iptables 规则未改动）"
                     return
                 else
                     warn "已取消"

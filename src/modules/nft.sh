@@ -11,6 +11,8 @@ NFT_RENDER_VERSION="1"
 NFT_TRACK_TIMEOUT="${NFT_TRACK_TIMEOUT:-30m}"
 NFT_DDNS_TIMER_FILE="/etc/systemd/system/nftpf-ddns.timer"
 NFT_DDNS_SERVICE_FILE="/etc/systemd/system/nftpf-ddns.service"
+NFT_SYSCTL_FILE="${NFT_SYSCTL_FILE:-/etc/sysctl.d/99-vps-nftpf-forward.conf}"
+NFT_PROC_SYS="${NFT_PROC_SYS:-/proc/sys}"
 
 # ── 基础工具 ──────────────────────────────────────────────
 nft_ensure_state_dir() {
@@ -155,15 +157,54 @@ nft_uninstall() {
     fi
 }
 
-nft_enable_ip_forward() {
-    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
-    sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1
-    if [ -f /etc/sysctl.conf ]; then
-        grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf \
-            || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
-        grep -q '^net.ipv6.conf.all.forwarding=1' /etc/sysctl.conf \
-            || echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf
+# 合并写入本模块的 sysctl 持久化文件（不再追加 /etc/sysctl.conf：Debian 13 起不再读取它）。
+nft_persist_forward() {
+    local key="$1" file="$NFT_SYSCTL_FILE" tmp dev
+    shift
+    mkdir -p "$(dirname "$file")" || return 1
+    tmp=$(mktemp "${file}.tmp.XXXXXX") || return 1
+    {
+        [ ! -f "$file" ] || cat "$file"
+        printf '%s = 1\n' "$key"
+        for dev in "$@"; do printf 'net/ipv6/conf/%s/accept_ra = 2\n' "$dev"; done
+    } | awk '!seen[$0]++' > "$tmp" || { rm -f "$tmp"; return 1; }
+    chmod 644 "$tmp" 2>/dev/null || true
+    mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+}
+
+# 只开启规则所需协议族的转发，并且先确认。开启 IPv6 转发时内核会丢弃 accept_ra=1 网卡上
+# 由 RA 学到的默认路由，所以先把这些网卡设为 accept_ra=2，避免 IPv6 SSH 断开。
+nft_prepare_ip_forward() {
+    local family="$1" key ra_ifaces=() dev cur lines=()
+    case "$family" in
+        ipv4) key=net.ipv4.ip_forward ;;
+        ipv6) key=net.ipv6.conf.all.forwarding ;;
+        *) return 1 ;;
+    esac
+    [ "$(cat "$NFT_PROC_SYS/${key//.//}" 2>/dev/null)" = 1 ] && return 0
+    if [ "$family" = ipv6 ]; then
+        while IFS= read -r dev; do
+            [ -n "$dev" ] || continue
+            cur=$(cat "$NFT_PROC_SYS/net/ipv6/conf/$dev/accept_ra" 2>/dev/null || true)
+            [ "$cur" = 2 ] || ra_ifaces+=("$dev")
+        done < <(ip -6 route show default 2>/dev/null \
+            | awk '/proto ra/ { for (i = 1; i < NF; i++) if ($i == "dev") print $(i + 1) }' | sort -u)
     fi
+    lines=("开启 ${key} = 1（运行时，并写入 ${NFT_SYSCTL_FILE}）")
+    for dev in "${ra_ifaces[@]+"${ra_ifaces[@]}"}"; do
+        lines+=("网卡 ${dev}：accept_ra = 2，开启转发后仍接收 RA 默认路由")
+    done
+    lines+=("内核转发会影响路由、NAT 与 Docker 网络行为；不开启则本规则无法生效")
+    confirm_change_preview "开启 ${family} 内核转发" "${lines[@]}" || return 1
+    for dev in "${ra_ifaces[@]+"${ra_ifaces[@]}"}"; do
+        printf '2\n' > "$NFT_PROC_SYS/net/ipv6/conf/$dev/accept_ra" \
+            || { error "无法设置 ${dev} 的 accept_ra=2，已取消开启 IPv6 转发"; return 1; }
+    done
+    printf '1\n' > "$NFT_PROC_SYS/${key//.//}" || { error "无法开启 ${key}"; return 1; }
+    nft_persist_forward "$key" "${ra_ifaces[@]+"${ra_ifaces[@]}"}" \
+        || warn "转发设置持久化失败，重启后需重新开启"
+    audit_action "开启内核转发 ${key}" SUCCESS
+    info "已开启 ${key} ✓"
 }
 
 # ── IP / 端口 校验 ────────────────────────────────────────
@@ -194,6 +235,14 @@ nft_classify() {
 
 nft_check_port() {
     [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+# 监听端口段覆盖 SSH 端口时，新的 SSH 连接会被转发走，直接拒绝。
+nft_reject_ssh_port() {
+    local hit
+    hit=$(ssh_port_in_range "$1" "$2") || return 0
+    error "监听端口 ${1}-${2} 包含 SSH 端口 ${hit}，会把新的 SSH 连接转发走，已拒绝。"
+    return 1
 }
 
 nft_resolve_domain() {
@@ -553,6 +602,7 @@ nft_add_rule() {
         nft_check_port "$le" || { error "结束端口无效"; return; }
         [ "$ls" -le "$le" ] || { error "起始端口不能大于结束端口"; return; }
     fi
+    nft_reject_ssh_port "$ls" "$le" || return
 
     read -rp "  目标 IP / 域名: " thost
     [ -z "$thost" ] && { warn "已取消"; return; }
@@ -608,6 +658,7 @@ nft_add_rule() {
     read -rp "  确认添加？(Y/n，默认Y): " c
     [ -z "$c" ] && c="y"
     echo "$c" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
+    nft_prepare_ip_forward "$family" || { warn "已取消，未添加规则"; return; }
 
     echo "$record" >> "$NFT_RULES_FILE"
     nft_write_and_apply || {
@@ -663,6 +714,7 @@ nft_edit_rule() {
         nft_check_port "$new_le" || { error "结束端口无效"; return; }
         [ "$new_ls" -le "$new_le" ] || { error "起始端口不能大于结束端口"; return; }
     fi
+    nft_reject_ssh_port "$new_ls" "$new_le" || return
 
     # ── 目标主机 ──
     read -rp "  目标 IP/域名 [${OLD_THOST}]: " new_thost
@@ -733,6 +785,7 @@ nft_edit_rule() {
     read -rp "  确认应用？(Y/n，默认Y): " c
     [ -z "$c" ] && c="y"
     echo "$c" | grep -qiE '^y(es)?$' || { warn "已取消"; return; }
+    nft_prepare_ip_forward "$new_family" || { warn "已取消，规则未修改"; return; }
 
     # 备份原规则用于回滚
     local backup_line="$NFT_FOUND_RULE"
@@ -1135,6 +1188,9 @@ iptpf_add() {
         3) protos="tcp udp" ;;
         *) error "无效选项"; return ;;
     esac
+    case "$protos" in
+        *tcp*) nft_reject_ssh_port "$src" "$src" || return ;;
+    esac
 
     # 检查重复
     for p in $protos; do
@@ -1344,7 +1400,6 @@ nft_menu() {
         else
             case "$ch" in
                 1|2)
-                    nft_enable_ip_forward
                     if [ "$ch" = "1" ]; then nft_add_rule single
                     else nft_add_rule range; fi
                     ;;

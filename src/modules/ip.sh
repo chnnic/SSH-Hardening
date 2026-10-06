@@ -116,6 +116,18 @@ ip_disable_v6() {
     print_header "关闭 IPv6"
     warn "关闭 IPv6 后，仅 IPv6 的服务将无法访问！"
     echo ""
+    local SSH_SERVER_ADDR
+    read -r _ _ SSH_SERVER_ADDR _ <<< "${SSH_CONNECTION:-}"
+    case "$SSH_SERVER_ADDR" in
+        ::ffff:*.*) ;;
+        *:*)
+            error "当前 SSH 会话通过 IPv6（${SSH_SERVER_ADDR}）连接，关闭 IPv6 会立即断开。请改用 IPv4 登录后再操作。"
+            return 1 ;;
+    esac
+    if [ -z "$(ip -4 route show default 2>/dev/null)" ]; then
+        error "未检测到 IPv4 默认路由，关闭 IPv6 后服务器可能完全失联，已拒绝操作。"
+        return 1
+    fi
     read -rp "  确认关闭？(Y/n，默认Y): " CONFIRM
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
@@ -270,7 +282,7 @@ ip_source_safety_arm() {
     script="$VPS_DATA_DIR/rollback_ip_source_$$_$(date +%s)_${RANDOM}.sh"
     {
         echo '#!/bin/bash'
-        echo 'sleep 180'
+        safety_rollback_prologue "$script"
         printf 'ip -%q route replace' "$family"
         for token in "${output[@]}"; do printf ' %q' "$token"; done
         echo ' >/dev/null 2>&1'

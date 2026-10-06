@@ -24,7 +24,8 @@ add_key() {
         LINE=${LINE%$'\r'}
         LINE=$(printf '%s' "$LINE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
         [ -n "$LINE" ] || continue
-        if ! printf '%s\n' "$LINE" | grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss)[^[:space:]]* [A-Za-z0-9+/=]+( .*)?$'; then
+        # 粘贴内容必须以密钥类型开头（不接受选项前缀），且类型和主体合法。
+        if ! printf '%s\n' "$LINE" | ssh_pubkey_entries - | awk -F '\t' '$4 == 0 { found = 1 } END { exit !found }'; then
             BAD=1; break
         fi
         if command -v ssh-keygen >/dev/null 2>&1 && ! printf '%s\n' "$LINE" | ssh-keygen -lf /dev/stdin >/dev/null 2>&1; then
@@ -43,35 +44,63 @@ add_key() {
         return
     fi
 
-    mkdir -p "$(dirname "$AUTH_KEYS")"
-    chmod 700 "$(dirname "$AUTH_KEYS")"
-
     # 按“类型 + 主体”去重，忽略备注差异；每把钥匙单独判断。
-    local KEY_BODY ADDED=0 SKIPPED=0 SEEN=""
-    # 原文件末尾没有换行时先补上，避免新公钥拼接到最后一行。
-    if [ -s "$AUTH_KEYS" ] && [ -n "$(tail -c 1 "$AUTH_KEYS")" ]; then
-        printf '\n' >> "$AUTH_KEYS"
-    fi
+    local EXISTING KEY_BODY ADDED=0 SKIPPED=0 RESTRICTED=0 SEEN="" NEW_LINES=()
+    EXISTING=$(ssh_pubkey_entries "$AUTH_KEYS" | awk -F '\t' '{print $2 " " $3 "\t" $4}')
     for LINE in "${KEY_LINES[@]}"; do
         KEY_BODY=$(printf '%s\n' "$LINE" | awk '{print $1, $2}')
-        if grep -qF -- "$KEY_BODY" "$AUTH_KEYS" 2>/dev/null || printf '%s' "$SEEN" | grep -qxF -- "$KEY_BODY"; then
+        if printf '%s\n' "$EXISTING" | cut -f1 | grep -qxF -- "$KEY_BODY"; then
+            printf '%s\n' "$EXISTING" | grep -qxF -- "${KEY_BODY}"$'\t1' && RESTRICTED=$((RESTRICTED + 1))
             SKIPPED=$((SKIPPED + 1))
             continue
         fi
-        printf '%s\n' "$LINE" >> "$AUTH_KEYS"
+        if printf '%s' "$SEEN" | grep -qxF -- "$KEY_BODY"; then
+            SKIPPED=$((SKIPPED + 1))
+            continue
+        fi
+        NEW_LINES+=("$LINE")
         SEEN="${SEEN}${KEY_BODY}"$'\n'
         ADDED=$((ADDED + 1))
     done
-    chmod 600 "$AUTH_KEYS" 2>/dev/null || true
+    if [ "$ADDED" -gt 0 ] && ! ssh_auth_keys_append "${NEW_LINES[@]}"; then
+        error "写入 ${AUTH_KEYS} 失败，未添加任何公钥"
+        audit_action "添加 SSH 公钥" FAILED
+        return 1
+    fi
 
     [ "$SKIPPED" -gt 0 ] && warn "跳过 ${SKIPPED} 个已存在的公钥"
+    [ "$RESTRICTED" -gt 0 ] && warn "其中 ${RESTRICTED} 个已存在的公钥带有限制选项（如 command=），可能仍无法直接登录，请检查 ${AUTH_KEYS}"
     local TOTAL
     TOTAL=$(ssh_key_count)
     if [ "$ADDED" -gt 0 ]; then
+        audit_action "添加 ${ADDED} 个 SSH 公钥" SUCCESS
         info "已添加 ${ADDED} 个公钥！当前共 $TOTAL 个公钥 ✓"
     else
         warn "没有新增公钥（当前共 $TOTAL 个）"
     fi
+}
+
+# 当前会话若用公钥登录，从 sshd 日志按“来源 IP + 端口”找出所用公钥指纹（尽力而为）。
+ssh_current_session_fingerprint() {
+    local CLIENT_IP CLIENT_PORT LOGS=""
+    read -r CLIENT_IP CLIENT_PORT _ <<< "${SSH_CONNECTION:-}"
+    [ -n "$CLIENT_IP" ] && [ -n "$CLIENT_PORT" ] || return 1
+    if command -v journalctl >/dev/null 2>&1; then
+        LOGS=$(journalctl -q --no-pager -o cat -t sshd -t sshd-session -n 5000 2>/dev/null || true)
+    fi
+    local F
+    for F in /var/log/auth.log /var/log/secure /var/log/messages; do
+        [ -r "$F" ] && LOGS="${LOGS}"$'\n'"$(tail -n 5000 "$F" 2>/dev/null)"
+    done
+    printf '%s\n' "$LOGS" | grep -F "Accepted publickey for " | grep -F " from ${CLIENT_IP} port ${CLIENT_PORT} " \
+        | tail -1 | grep -oE 'SHA256:[A-Za-z0-9+/]+' | head -1
+}
+
+# 删除全部公钥后是否还能用密码登录当前账户。
+ssh_password_login_possible() {
+    [ "$(get_config PasswordAuthentication)" = yes ] || return 1
+    [ "$(id -u)" != 0 ] && return 0
+    [ "$(get_config PermitRootLogin)" = yes ]
 }
 
 delete_key() {
@@ -87,37 +116,61 @@ delete_key() {
     [ "$DEL_NUM" = "0" ] && return 0
     [ -z "$DEL_NUM" ] && { warn "已取消。"; return; }
 
-    if ! echo "$DEL_NUM" | grep -qE '^[0-9]+$'; then
+    if ! echo "$DEL_NUM" | grep -qE '^[0-9]+$' || [ "$DEL_NUM" -lt 1 ]; then
         error "无效编号。"; return
     fi
 
-    local i=1 TARGET_LINE=""
-    while IFS= read -r line; do
-        if echo "$line" | grep -qE '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa|ssh-dss) '; then
-            if [ "$i" -eq "$DEL_NUM" ]; then TARGET_LINE="$line"; break; fi
-            i=$((i+1))
-        fi
-    done < "$AUTH_KEYS"
-
-    if [ -z "$TARGET_LINE" ]; then
+    local ENTRIES TARGET TYPE BODY COMMENT REMAIN FINGER CURRENT_FP RISK=""
+    ENTRIES=$(ssh_pubkey_entries "$AUTH_KEYS")
+    TARGET=$(printf '%s\n' "$ENTRIES" | sed -n "${DEL_NUM}p")
+    if [ -z "$TARGET" ]; then
         error "编号 $DEL_NUM 不存在。"; return
+    fi
+    IFS=$'\t' read -r _ TYPE BODY _ COMMENT <<< "$TARGET"
+    REMAIN=$(printf '%s\n' "$ENTRIES" | awk -F '\t' -v b="$BODY" '$3 != b' | grep -c . || true)
+    FINGER=$(ssh_pubkey_fingerprint "$TYPE" "$BODY")
+    CURRENT_FP=$(ssh_current_session_fingerprint 2>/dev/null || true)
+
+    if [ -n "$FINGER" ] && [ "$FINGER" = "$CURRENT_FP" ]; then
+        RISK="这是当前 SSH 会话正在使用的公钥"
+    elif [ "$REMAIN" -eq 0 ] && ! ssh_password_login_possible; then
+        RISK="删除后将没有任何公钥，而当前配置不允许用密码登录此账户"
     fi
 
     echo ""
     warn "即将删除以下公钥："
-    echo -e "  ${RED}$(echo "$TARGET_LINE" | awk '{print $1, $3}')${NC}"
+    echo -e "  ${RED}${TYPE} ${COMMENT:-（无备注）}${NC}  ${DIM}${FINGER}${NC}"
     echo ""
-    read -rp "  确认删除？(Y/n，默认Y): " CONFIRM
-    [ -z "${CONFIRM}" ] && CONFIRM="y"
-    if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+    if [ -n "$RISK" ]; then
+        error "${RISK}，断开后可能无法再登录！"
+        read -rp "  确认仍要删除，请输入 DELETE: " CONFIRM
+        [ "$CONFIRM" = "DELETE" ] || { warn "已取消"; return; }
+    else
+        read -rp "  确认删除？(y/N，默认N): " CONFIRM
+        if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
+    fi
 
-    # 取公钥主体（类型+base64）作为匹配依据，避免尾部空格/备注差异导致删除失败
-    local KEY_BODY
-    KEY_BODY=$(echo "$TARGET_LINE" | awk '{print $1, $2}')
-    grep -vF "$KEY_BODY" "$AUTH_KEYS" > "${AUTH_KEYS}.tmp" || true
-    mv "${AUTH_KEYS}.tmp" "$AUTH_KEYS"
-    chmod 600 "$AUTH_KEYS"
-    info "公钥已删除 ✓"
+    # 按“类型 + 主体”删除该公钥的所有副本，其余行原样保留。
+    local DROP TMP
+    DROP=$(printf '%s\n' "$ENTRIES" | awk -F '\t' -v b="$BODY" '$3 == b {print $1}' | paste -sd, -)
+    TMP=$(mktemp "${AUTH_KEYS}.tmp.XXXXXX") || { error "无法创建临时文件"; return 1; }
+    if ! awk -v drop="$DROP" 'BEGIN { n = split(drop, a, ","); for (i = 1; i <= n; i++) d[a[i]] = 1 } !(NR in d)' \
+        "$AUTH_KEYS" > "$TMP"; then
+        rm -f "$TMP"
+        error "生成新的公钥文件失败，未做任何修改"
+        audit_action "删除 SSH 公钥 ${FINGER}" FAILED
+        return 1
+    fi
+    safety_arm ssh_keys || { rm -f "$TMP"; return 1; }
+    if ! ssh_auth_keys_replace "$TMP"; then
+        rm -f "$TMP"
+        error "写入 ${AUTH_KEYS} 失败，自动回滚计时器仍在运行"
+        audit_action "删除 SSH 公钥 ${FINGER}" FAILED
+        return 1
+    fi
+    audit_action "删除 SSH 公钥 ${TYPE} ${FINGER}" SUCCESS
+    info "公钥已删除 ✓（剩余 ${REMAIN} 个）"
+    safety_confirm
 }
 
 generate_key() {
@@ -183,13 +236,15 @@ generate_key() {
     read -rp "  是否将公钥添加到本服务器？(Y/n，默认Y): " ADD_CONFIRM
     [ -z "${ADD_CONFIRM}" ] && ADD_CONFIRM="y"
     if echo "${ADD_CONFIRM}" | grep -qiE '^y(es)?$'; then
-        mkdir -p "$(dirname "$AUTH_KEYS")"; chmod 700 "$(dirname "$AUTH_KEYS")"
         local KEY_BODY
         KEY_BODY=$(echo "$PUBKEY" | awk '{print $1, $2}')
-        if grep -qF "$KEY_BODY" "$AUTH_KEYS" 2>/dev/null; then
+        if ssh_pubkey_entries "$AUTH_KEYS" | awk -F '\t' '{print $2 " " $3}' | grep -qxF -- "$KEY_BODY"; then
             warn "该公钥已存在于服务器，跳过添加"
+        elif ! ssh_auth_keys_append "$PUBKEY"; then
+            error "写入 ${AUTH_KEYS} 失败，公钥未添加"
+            audit_action "添加生成的 SSH 公钥" FAILED
         else
-            echo "$PUBKEY" >> "$AUTH_KEYS"; chmod 600 "$AUTH_KEYS"
+            audit_action "添加生成的 SSH 公钥 ${FINGER}" SUCCESS
             local TOTAL
             TOTAL=$(ssh_key_count)
             echo ""
@@ -373,7 +428,13 @@ change_port() {
         return
     fi
 
-    cancel_safety_timer
+    # 超过 180 秒才确认时回滚已经恢复旧端口：此时绝不能再同步 Fail2ban 或关闭旧端口。
+    if ! safety_disarm; then
+        error "确认太晚：自动回滚已经执行，SSH 已恢复为旧端口 ${OLD_PORT}，新端口 ${INPUT_PORT} 未生效。"
+        warn "未同步 Fail2ban，也未关闭旧端口。如需修改端口，请重新执行本菜单。"
+        audit_action "SSH 新端口 ${INPUT_PORT} 确认超时，已自动回滚" FAILED
+        return 1
+    fi
     audit_action "确认 SSH 新端口 ${INPUT_PORT} 可登录，取消自动回滚" SUCCESS
     info "已确认新端口可登录，自动回滚已取消。"
     f2b_sync_ssh_port "$OLD_PORT" "$INPUT_PORT" || warn "Fail2ban 监控端口同步失败，请在 Fail2ban 菜单手动设置为 ${INPUT_PORT}"

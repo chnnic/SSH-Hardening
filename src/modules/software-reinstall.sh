@@ -207,13 +207,32 @@ reinstall_download_engine() {
 
 reinstall_collect_auth_args() {
     REINSTALL_AUTH_ARGS=()
-    local SSH_PORT KEY PASSWORD PASSWORD2
+    local SSH_PORT PASSWORD PASSWORD2 TYPE BODY COMMENT FINGER KEY_ARGS=() SKIPPED=0
     SSH_PORT=$(get_config Port); SSH_PORT=${SSH_PORT:-22}
-    KEY=$(grep -m1 -E '^(ssh-rsa|ssh-ed25519|ecdsa-sha2|sk-ssh|sk-ecdsa) ' "$AUTH_KEYS" 2>/dev/null || true)
     echo -e "  新系统 SSH 端口 / New system SSH port：${BOLD}$SSH_PORT${NC}"
-    if [ -n "$KEY" ]; then
-        reinstall_bilingual_info "检测到 SSH 公钥，新系统将继续使用该公钥" "SSH public key detected; it will be reused on the new system"
-        REINSTALL_AUTH_ARGS=(--ssh-port "$SSH_PORT" --ssh-key "$KEY")
+    # 全部公钥都带到新系统；上游只接受 ssh-rsa / ssh-ed25519 / ecdsa-sha2-nistp*。
+    while IFS=$'\t' read -r _ TYPE BODY _ COMMENT; do
+        [ -n "$TYPE" ] || continue
+        FINGER=$(ssh_pubkey_fingerprint "$TYPE" "$BODY")
+        case "$TYPE" in
+            ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521)
+                KEY_ARGS+=(--ssh-key "$TYPE $BODY${COMMENT:+ $COMMENT}")
+                echo -e "    ${GREEN}✓${NC} ${TYPE} ${COMMENT:-（无备注）} ${DIM}${FINGER}${NC}" ;;
+            *)
+                SKIPPED=$((SKIPPED + 1))
+                echo -e "    ${YELLOW}✗${NC} ${TYPE} ${COMMENT:-（无备注）} ${DIM}${FINGER}（重装工具不支持此类型）${NC}" ;;
+        esac
+    done < <(ssh_pubkey_entries "$AUTH_KEYS")
+    if [ "${#KEY_ARGS[@]}" -gt 0 ]; then
+        reinstall_bilingual_info "新系统将使用以上 $(( ${#KEY_ARGS[@]} / 2 )) 个公钥登录，请确认其中有你自己的公钥" "The new system will accept the public keys listed above; make sure yours is included"
+        [ "$SKIPPED" -eq 0 ] || reinstall_bilingual_warn "标记 ✗ 的公钥不会带到新系统" "Keys marked ✗ will not be copied to the new system"
+        local KEYS_OK
+        read -rp "$(ui_prompt '以上公钥中有你能登录的私钥吗？(y/N): ')" KEYS_OK
+        echo "$KEYS_OK" | grep -qiE '^y(es)?$' || {
+            reinstall_bilingual_warn "已取消：请先在 SSH 管理中添加你自己的公钥" "Cancelled: add your own public key in SSH management first"
+            return 1
+        }
+        REINSTALL_AUTH_ARGS=(--ssh-port "$SSH_PORT" "${KEY_ARGS[@]}")
         return 0
     fi
     reinstall_bilingual_warn "未检测到 SSH 公钥，需要为新系统设置 root 密码" "No SSH public key found; set a root password for the new system"
