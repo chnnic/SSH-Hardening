@@ -88,21 +88,55 @@ config_backup_prune() {
     audit_action "自动清理 $REMOVE_COUNT 个旧配置备份" SUCCESS
 }
 
-cancel_safety_timer() {
-    [ -n "${SAFETY_PID:-}" ] || return 0
-    kill "$SAFETY_PID" 2>/dev/null || true
-    wait "$SAFETY_PID" 2>/dev/null || true
-    rm -f "${SAFETY_SCRIPT:-}"
+# 回滚脚本醒来后先屏蔽 TERM/INT/HUP 再写 .fired 标记：一旦开始恢复就不会被半途杀掉，
+# 取消方也能据此区分“已取消”和“已回滚”。
+safety_rollback_prologue() {
+    printf '%s\n' 'sleep 180' "trap '' TERM INT HUP" ": > $(printf '%q' "$1.fired")"
+}
+
+# PID 可能已退出并被系统复用：有 /proc 时核对命令行，确认仍是本工具的回滚脚本。
+safety_pid_is_ours() {
+    local PID="$1" SCRIPT="$2"
+    kill -0 "$PID" 2>/dev/null || return 1
+    [ -r "/proc/$PID/cmdline" ] || return 0
+    tr '\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null | grep -qF -- "$SCRIPT"
+}
+
+# 取消自动回滚。返回 1 表示回滚已经开始或完成，调用方不能再按“已确认”继续。
+safety_disarm() {
+    local PID="${SAFETY_PID:-}" SCRIPT="${SAFETY_SCRIPT:-}" i
+    [ -n "$PID" ] || return 0
     SAFETY_PID="" SAFETY_SCRIPT=""
+    if [ -z "$SCRIPT" ] || [ ! -e "${SCRIPT}.fired" ]; then
+        if safety_pid_is_ours "$PID" "$SCRIPT"; then
+            kill "$PID" 2>/dev/null || true
+        fi
+        wait "$PID" 2>/dev/null || true
+    fi
+    # 已开始的回滚会忽略 TERM：等它执行完再判断结果，避免误报“已取消”。
+    for ((i = 0; i < 120; i++)); do
+        [ -n "$SCRIPT" ] && [ -e "${SCRIPT}.fired" ] || break
+        safety_pid_is_ours "$PID" "$SCRIPT" || break
+        sleep 1
+    done
+    if [ -n "$SCRIPT" ] && [ -e "${SCRIPT}.fired" ]; then
+        rm -f "${SCRIPT}.fired" "$SCRIPT"
+        return 1
+    fi
+    rm -f "$SCRIPT"
+    return 0
+}
+
+cancel_safety_timer() {
+    safety_disarm
 }
 
 # 同一时刻只能有一个回滚计时器：覆盖 SAFETY_PID 会留下无法取消的旧计时器，
 # 直接取消则会让上一项未确认的变更失去保护。
 safety_resolve_pending() {
     [ -n "${SAFETY_PID:-}" ] || return 0
-    if ! kill -0 "$SAFETY_PID" 2>/dev/null; then
-        wait "$SAFETY_PID" 2>/dev/null || true
-        SAFETY_PID="" SAFETY_SCRIPT=""
+    if ! safety_pid_is_ours "$SAFETY_PID" "${SAFETY_SCRIPT:-}"; then
+        safety_disarm || warn "上一项未确认的变更已自动回滚。"
         return 0
     fi
     warn "上一项变更的自动回滚仍在计时，需先确认连接正常才能继续。"
@@ -236,12 +270,22 @@ config_export_archive() {
         printf '%s\n' "$TMP_ARCHIVE"
         return 0
     fi
+    # 输入目录时在目录内生成文件名；绝不能对目录本身 chmod（/tmp、家目录会因此失效）。
+    if [ -d "$TARGET" ]; then
+        TARGET="${TARGET%/}/vps-config-export-$(date +%Y%m%d_%H%M%S).tar.gz"
+    fi
+    if [ -L "$TARGET" ] || { [ -e "$TARGET" ] && [ ! -f "$TARGET" ]; }; then
+        error "导出路径不是普通文件：$TARGET"
+        return 1
+    fi
     mkdir -p "$(dirname "$TARGET")" 2>/dev/null || { error "无法创建导出目录"; return 1; }
-    if ! cp "$TMP_ARCHIVE" "$TARGET" 2>/dev/null; then
+    local OUT
+    OUT=$(mktemp "${TARGET}.tmp.XXXXXX" 2>/dev/null) || { error "导出失败：无法写入 $(dirname "$TARGET")"; return 1; }
+    if ! cp "$TMP_ARCHIVE" "$OUT" 2>/dev/null || ! chmod 600 "$OUT" || ! mv "$OUT" "$TARGET"; then
+        rm -f "$OUT"
         error "导出失败"
         return 1
     fi
-    chmod 600 "$TARGET" 2>/dev/null || true
     audit_action "导出配置到 $(basename "$TARGET")" SUCCESS
     info "配置已导出：$TARGET"
     printf '%s\n' "$TARGET"
@@ -2893,14 +2937,23 @@ safety_arm() {
     SNAP=$(config_backup_create "safety_${LABEL}" true) || return 1
     command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active' && UFW_STATE="active"
     svc_is_active firewalld && FIREWALLD_STATE="active"
+    # 删除 sysctl 文件不会改变运行值：记录当前 IPv6 开关，回滚时显式写回。
+    local V6_RESTORE="" KEY VALUE
+    for KEY in net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6; do
+        VALUE=$(sysctl -n "$KEY" 2>/dev/null || true)
+        case "$VALUE" in
+            0|1) V6_RESTORE="${V6_RESTORE}sysctl -w ${KEY}=${VALUE} >/dev/null 2>&1 || true"$'\n' ;;
+        esac
+    done
     SCRIPT="$VPS_DATA_DIR/rollback_$$_$(date +%s)_${RANDOM}.sh"
     mkdir -p "$VPS_DATA_DIR"
+    find "$VPS_DATA_DIR" -maxdepth 1 -name 'rollback_*.fired' -mmin +60 -exec rm -f {} + 2>/dev/null || true
     cat > "$SCRIPT" <<ROLLBACK_EOF
 #!/bin/bash
-sleep 180
+$(safety_rollback_prologue "$SCRIPT")
 tar -xzf '$SNAP' -C / >/dev/null 2>&1
 tar -tzf '$SNAP' 2>/dev/null | grep -qx 'etc/sysctl.d/99-ipv6-disable.conf' || rm -f /etc/sysctl.d/99-ipv6-disable.conf
-$(declare -f systemd_available restart_ssh nft_reload_managed_tables)
+${V6_RESTORE}$(declare -f systemd_available restart_ssh nft_reload_managed_tables)
 sshd -t >/dev/null 2>&1 && restart_ssh
 systemctl restart systemd-resolved >/dev/null 2>&1 || true
 systemctl restart NetworkManager >/dev/null 2>&1 || true
@@ -2930,12 +2983,13 @@ safety_confirm() {
     warn "请保持当前连接，并用新终端确认 SSH 和网络正常。"
     read -rp "  确认连接正常，取消自动回滚？(y/N): " OK
     if echo "$OK" | grep -qiE '^y(es)?$'; then
-        kill "$SAFETY_PID" 2>/dev/null || true
-        wait "$SAFETY_PID" 2>/dev/null || true
-        rm -f "${SAFETY_SCRIPT:-}"
+        if ! safety_disarm; then
+            error "确认太晚：自动回滚已经执行，本次变更已被撤销，请重新检查当前配置。"
+            audit_action "确认时自动回滚已执行" FAILED
+            return 1
+        fi
         audit_action "确认连接正常，取消自动回滚" SUCCESS
         info "已取消自动回滚"
-        SAFETY_PID="" SAFETY_SCRIPT=""
     else
         warn "自动回滚仍在计时，请勿关闭旧连接。"
     fi

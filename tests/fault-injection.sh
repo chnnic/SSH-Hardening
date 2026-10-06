@@ -716,9 +716,10 @@ self_reconcile_tc_after_update >/dev/null \
 # Arming a new rollback must not orphan or silently cancel a pending one.
 (
     warn() { :; }; error() { :; }; info() { :; }; audit_action() { :; }
-    sleep 30 &
-    SAFETY_PID=$!
     SAFETY_SCRIPT="$TMP/pending-rollback.sh"
+    printf 'sleep 30\n' > "$SAFETY_SCRIPT"
+    bash "$SAFETY_SCRIPT" &
+    SAFETY_PID=$!
     ! safety_resolve_pending <<< "n" >/dev/null 2>&1 \
         || { echo "Pending rollback was replaced without confirmation" >&2; exit 1; }
     kill -0 "$SAFETY_PID" 2>/dev/null || { echo "Pending rollback was cancelled without confirmation" >&2; exit 1; }
@@ -776,6 +777,204 @@ self_reconcile_tc_after_update >/dev/null \
     printf '%s\nroot@vps:~# junk\n' "$(cat "$TMP/k1.pub" | sed 's/one/three/')" | add_key >/dev/null
     ! grep -q junk "$AUTH_KEYS" || { echo "add_key wrote a non-key line" >&2; exit 1; }
     [ "$(wc -l < "$AUTH_KEYS")" -eq 2 ] || { echo "add_key wrote a partial batch" >&2; exit 1; }
+)
+
+# Public keys: ECDSA/FIDO and option-prefixed lines are real keys; comments are not.
+(
+    AUTH_KEYS="$TMP/keytypes/authorized_keys"
+    mkdir -p "$TMP/keytypes"
+    printf '%s\n' '# ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICommented old' \
+        'ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTY= ecdsa-user' \
+        'sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAA fido-user' \
+        'no-port-forwarding,command="echo hi" ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC= restricted' > "$AUTH_KEYS"
+    [ "$(ssh_key_count)" = 3 ] || { echo "Key counter missed ECDSA/FIDO/option-prefixed keys" >&2; exit 1; }
+    [ "$(ssh_pubkey_entries | awk -F '\t' '$4 == 1 {print $2}')" = ssh-rsa ] \
+        || { echo "Option-prefixed key was not flagged" >&2; exit 1; }
+)
+
+# Appending keys must not glue the new key onto a last line without a newline.
+(
+    AUTH_KEYS="$TMP/append/authorized_keys"
+    mkdir -p "$TMP/append"
+    printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOld' > "$AUTH_KEYS"
+    ssh_auth_keys_append 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINew new' || { echo "Key append failed" >&2; exit 1; }
+    [ "$(ssh_key_count)" = 2 ] && [ "$(wc -l < "$AUTH_KEYS" | tr -d ' ')" = 2 ] \
+        || { echo "Appended key was glued onto the previous line" >&2; exit 1; }
+    [ "$(ls -ld "$AUTH_KEYS" | cut -c1-10)" = "-rw-------" ] || { echo "authorized_keys lost mode 600" >&2; exit 1; }
+)
+
+# generate_key must use the newline-safe append.
+(
+    command -v ssh-keygen >/dev/null 2>&1 || exit 0
+    AUTH_KEYS="$TMP/genkey/authorized_keys"
+    mkdir -p "$TMP/genkey"
+    print_header() { :; }; menu_div() { :; }; menu_item() { :; }; menu_pair() { :; }
+    info() { :; }; warn() { :; }; error() { :; }; audit_action() { :; }
+    printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOld' > "$AUTH_KEYS"
+    printf '1\ngen\ny\n' | generate_key >/dev/null 2>&1
+    [ "$(ssh_key_count)" = 2 ] || { echo "generate_key glued the new key onto the last line" >&2; exit 1; }
+)
+
+# Deleting the last key without password login, or the key of this session, needs DELETE and the rollback timer.
+(
+    AUTH_KEYS="$TMP/delkey/authorized_keys"
+    mkdir -p "$TMP/delkey"
+    ARMED="$TMP/delkey/armed"
+    print_header() { :; }; menu_div() { :; }; menu_pair() { :; }; info() { :; }; warn() { :; }; error() { :; }
+    audit_action() { :; }
+    get_config() { case "$1" in PasswordAuthentication) echo no ;; PermitRootLogin) echo prohibit-password ;; esac; }
+    ssh_current_session_fingerprint() { return 1; }
+    safety_arm() { echo armed >> "$ARMED"; }
+    safety_confirm() { :; }
+    printf '%s\n' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOnly only' > "$AUTH_KEYS"
+    printf '1\ny\n' | delete_key >/dev/null 2>&1
+    [ "$(ssh_key_count)" = 1 ] || { echo "Last key was deleted without the DELETE confirmation" >&2; exit 1; }
+    printf '1\nDELETE\n' | delete_key >/dev/null 2>&1
+    [ "$(ssh_key_count)" = 0 ] && [ -s "$ARMED" ] || { echo "Confirmed last-key deletion did not run under the rollback timer" >&2; exit 1; }
+
+    : > "$ARMED"
+    printf '%s\n' '# keep me' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOne one' \
+        'command="x" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITwo two' > "$AUTH_KEYS"
+    printf '1\ny\n' | delete_key >/dev/null 2>&1
+    grep -qx '# keep me' "$AUTH_KEYS" && grep -q 'ITwo two' "$AUTH_KEYS" && ! grep -q 'IOne' "$AUTH_KEYS" \
+        || { echo "delete_key removed the wrong lines" >&2; exit 1; }
+    ssh_current_session_fingerprint() { ssh_pubkey_fingerprint ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITwo; }
+    command -v ssh-keygen >/dev/null 2>&1 || exit 0
+    if [ -n "$(ssh_pubkey_fingerprint ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITwo)" ]; then
+        printf '1\ny\n' | delete_key >/dev/null 2>&1
+        [ "$(ssh_key_count)" = 1 ] || { echo "Current session key was deleted without DELETE" >&2; exit 1; }
+    fi
+)
+
+# A rollback that already started must finish and be reported as rolled back, never as cancelled.
+(
+    warn() { :; }; error() { :; }; info() { :; }; audit_action() { :; }
+    SAFETY_SCRIPT="$TMP/firing-rollback.sh"
+    {
+        safety_rollback_prologue "$SAFETY_SCRIPT" | sed 's/^sleep 180$/sleep 0/'
+        printf 'sleep 2\n: > %q\n' "$TMP/rollback-finished"
+    } > "$SAFETY_SCRIPT"
+    bash "$SAFETY_SCRIPT" &
+    SAFETY_PID=$!
+    for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "${SAFETY_SCRIPT}.fired" ] && break; sleep 0.2; done
+    if safety_confirm <<< "y" >/dev/null 2>&1; then
+        echo "Confirmation after the rollback started was reported as a cancel" >&2; exit 1
+    fi
+    [ -e "$TMP/rollback-finished" ] || { echo "Cancelling interrupted a running rollback" >&2; exit 1; }
+    [ -z "$SAFETY_PID" ] || { echo "Fired rollback was not cleared" >&2; exit 1; }
+)
+
+# change_port must not sync Fail2ban or close the old port when the rollback already ran.
+(
+    CALLS="$TMP/change-port-calls"
+    : > "$CALLS"
+    SSHD_CONFIG="$TMP/change-port-sshd_config"
+    printf 'Port 22\n' > "$SSHD_CONFIG"
+    print_header() { :; }; menu_div() { :; }; info() { :; }; warn() { :; }; error() { :; }; audit_action() { :; }
+    get_config() { echo 22; }
+    backup_config() { :; }; set_config_file() { :; }; sshd_comment_unmanaged_directive() { :; }
+    confirm_file_diff() { return 0; }; sshd() { return 0; }; firewall_allow_port() { :; }
+    apply_and_restart() { return 0; }; ssh_port_report_listeners() { :; }
+    safety_arm() {
+        SAFETY_SCRIPT="$TMP/expired-rollback.sh"
+        : > "${SAFETY_SCRIPT}.fired"
+        true & SAFETY_PID=$!
+        wait "$SAFETY_PID"
+    }
+    f2b_sync_ssh_port() { echo f2b >> "$CALLS"; }
+    ufw() { echo "ufw $*" >> "$CALLS"; }
+    if printf '2222\ny\ny\n' | change_port >/dev/null 2>&1; then
+        echo "change_port reported success after the rollback ran" >&2; exit 1
+    fi
+    [ ! -s "$CALLS" ] || { echo "change_port acted on an already rolled-back port change: $(cat "$CALLS")" >&2; exit 1; }
+)
+
+# Disabling IPv6 is refused over an IPv6 SSH session, and the rollback restores runtime IPv6 state.
+(
+    print_header() { :; }; warn() { :; }; error() { :; }; info() { :; }
+    APPLIED="$TMP/v6-applied"
+    ip_apply_v6_state() { echo "$1" > "$APPLIED"; }
+    safety_arm() { :; }; safety_confirm() { :; }; confirm_change_preview() { return 0; }
+    ip() { echo 'default via 192.0.2.1 dev eth0'; }
+    SSH_CONNECTION='2001:db8::10 50000 2001:db8::1 22'
+    if printf 'y\n' | ip_disable_v6 >/dev/null 2>&1; then echo "IPv6 disable over IPv6 SSH succeeded" >&2; exit 1; fi
+    [ ! -e "$APPLIED" ] || { echo "IPv6 was disabled over an IPv6 SSH session" >&2; exit 1; }
+    ip() { :; }
+    SSH_CONNECTION='198.51.100.10 50000 192.0.2.10 22'
+    if printf 'y\n' | ip_disable_v6 >/dev/null 2>&1; then echo "IPv6 disable without IPv4 route succeeded" >&2; exit 1; fi
+    [ ! -e "$APPLIED" ] || { echo "IPv6 was disabled without an IPv4 default route" >&2; exit 1; }
+)
+(
+    VPS_DATA_DIR="$TMP/v6-rollback"
+    mkdir -p "$VPS_DATA_DIR"
+    warn() { :; }; audit_action() { :; }
+    config_backup_create() { echo "$TMP/snap.tar.gz"; }
+    nohup() { return 0; }
+    sysctl() { [ "$1" = -n ] && echo 0; }
+    safety_arm disable_v6 >/dev/null
+    grep -qx 'sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true' "$SAFETY_SCRIPT" \
+        || { echo "Rollback does not restore runtime disable_ipv6" >&2; exit 1; }
+    bash -n "$SAFETY_SCRIPT" || { echo "Rollback script has a syntax error" >&2; exit 1; }
+    SAFETY_PID="" SAFETY_SCRIPT=""
+)
+
+# DD reinstall must pass every supported key, not only the first line.
+(
+    AUTH_KEYS="$TMP/reinstall/authorized_keys"
+    mkdir -p "$TMP/reinstall"
+    reinstall_bilingual_info() { :; }; reinstall_bilingual_warn() { :; }
+    get_config() { echo 2222; }
+    printf '%s\n' 'command="x" ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC= panel' \
+        'ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTY= mine' \
+        'sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAA fido' > "$AUTH_KEYS"
+    reinstall_collect_auth_args <<< "y" >/dev/null 2>&1 || { echo "Reinstall rejected confirmed keys" >&2; exit 1; }
+    ARGS=" ${REINSTALL_AUTH_ARGS[*]} "
+    case "$ARGS" in *"--ssh-key ssh-rsa "*"--ssh-key ecdsa-sha2-nistp256 "*) ;; *) echo "Reinstall did not pass every key: $ARGS" >&2; exit 1 ;; esac
+    case "$ARGS" in *sk-ssh*|*--password*) echo "Reinstall passed an unsupported key or a password: $ARGS" >&2; exit 1 ;; esac
+    if reinstall_collect_auth_args <<< "n" >/dev/null 2>&1; then echo "Reinstall continued without key confirmation" >&2; exit 1; fi
+)
+
+# Exporting to a directory writes a file inside it and never changes the directory mode.
+(
+    info() { :; }; error() { :; }; audit_action() { :; }
+    mkdir -p "$TMP/export-dir"
+    chmod 1777 "$TMP/export-dir"
+    OUT=$(config_export_archive "$TMP/export-dir" dirtest) || { echo "Export to a directory failed" >&2; exit 1; }
+    [ "$(ls -ld "$TMP/export-dir" | cut -c1-10)" = "drwxrwxrwt" ] || { echo "Export changed the directory mode" >&2; exit 1; }
+    [ -f "$OUT" ] && [ "$(dirname "$OUT")" = "$TMP/export-dir" ] || { echo "Export did not create a file in the directory" >&2; exit 1; }
+)
+
+# Firewall removal must never delete SSH allow rules from INPUT.
+! grep -q 'iptables -D INPUT -p tcp --dport' "$ROOT/SSH-Hardening.sh" \
+    || { echo "Firewall uninstall still deletes SSH ACCEPT rules" >&2; exit 1; }
+
+# Forwarding rules must not capture the SSH port; kernel forwarding is per family and RA-safe.
+(
+    error() { :; }; warn() { :; }; info() { :; }; audit_action() { :; }
+    sshd_effective_ports() { echo 22; }
+    SSH_CONNECTION='198.51.100.10 50000 192.0.2.10 22222'
+    if nft_reject_ssh_port 10000 60000 >/dev/null 2>&1; then echo "Port range over the session SSH port was accepted" >&2; exit 1; fi
+    if nft_reject_ssh_port 22 22 >/dev/null 2>&1; then echo "Forwarding the configured SSH port was accepted" >&2; exit 1; fi
+    nft_reject_ssh_port 8080 8090 >/dev/null 2>&1 || { echo "Unrelated port range was rejected" >&2; exit 1; }
+
+    NFT_PROC_SYS="$TMP/procsys"
+    NFT_SYSCTL_FILE="$TMP/sysctl.d/99-vps-nftpf-forward.conf"
+    mkdir -p "$NFT_PROC_SYS/net/ipv4" "$NFT_PROC_SYS/net/ipv6/conf/all" "$NFT_PROC_SYS/net/ipv6/conf/eth0"
+    echo 0 > "$NFT_PROC_SYS/net/ipv4/ip_forward"
+    echo 0 > "$NFT_PROC_SYS/net/ipv6/conf/all/forwarding"
+    echo 1 > "$NFT_PROC_SYS/net/ipv6/conf/eth0/accept_ra"
+    ip() { echo 'default via fe80::1 dev eth0 proto ra metric 1024 expires 1790sec pref medium'; }
+    confirm_change_preview() { return 1; }
+    if nft_prepare_ip_forward ipv6 >/dev/null 2>&1; then echo "Declined forwarding preview still succeeded" >&2; exit 1; fi
+    [ "$(cat "$NFT_PROC_SYS/net/ipv6/conf/all/forwarding")" = 0 ] || { echo "IPv6 forwarding changed without confirmation" >&2; exit 1; }
+    confirm_change_preview() { return 0; }
+    nft_prepare_ip_forward ipv4 >/dev/null 2>&1 || { echo "IPv4 forwarding failed" >&2; exit 1; }
+    [ "$(cat "$NFT_PROC_SYS/net/ipv6/conf/all/forwarding")" = 0 ] || { echo "IPv4 rule enabled IPv6 forwarding" >&2; exit 1; }
+    nft_prepare_ip_forward ipv6 >/dev/null 2>&1 || { echo "IPv6 forwarding failed" >&2; exit 1; }
+    [ "$(cat "$NFT_PROC_SYS/net/ipv6/conf/eth0/accept_ra")" = 2 ] && [ "$(cat "$NFT_PROC_SYS/net/ipv6/conf/all/forwarding")" = 1 ] \
+        || { echo "IPv6 forwarding was enabled without accept_ra=2 on the RA interface" >&2; exit 1; }
+    grep -qx 'net/ipv6/conf/eth0/accept_ra = 2' "$NFT_SYSCTL_FILE" && grep -qx 'net.ipv4.ip_forward = 1' "$NFT_SYSCTL_FILE" \
+        || { echo "Forwarding settings were not persisted" >&2; exit 1; }
 )
 
 echo "Fault injection tests passed."
