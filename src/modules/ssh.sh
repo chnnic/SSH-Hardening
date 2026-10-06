@@ -257,6 +257,18 @@ generate_key() {
     rm -rf "$TMP_DIR"
 }
 
+# 把候选配置写入 sshd_config；失败（chattr +i、只读等）时立即撤销计时器，不能误报成功。
+ssh_install_candidate() {
+    local CANDIDATE="$1"
+    if ! cp "$CANDIDATE" "$SSHD_CONFIG"; then
+        rm -f "$CANDIDATE"
+        error "无法写入 ${SSHD_CONFIG}（文件可能被锁定或只读），配置未修改"
+        safety_rollback_now
+        return 1
+    fi
+    rm -f "$CANDIDATE"
+}
+
 set_login_mode() {
     print_header "登录方式设置"
 
@@ -300,8 +312,9 @@ set_login_mode() {
                 rm -f "$CANDIDATE"; warn "已取消，配置未修改"; return
             fi
             safety_arm ssh_login || { rm -f "$CANDIDATE"; return 1; }
-            cp "$CANDIDATE" "$SSHD_CONFIG"; rm -f "$CANDIDATE"
-            if apply_and_restart; then info "已切换：仅密钥登录 ✓"; audit_action "SSH切换为仅密钥登录" SUCCESS; safety_confirm; fi
+            ssh_install_candidate "$CANDIDATE" || return 1
+            if apply_and_restart; then info "已切换：仅密钥登录 ✓"; audit_action "SSH切换为仅密钥登录" SUCCESS; safety_confirm
+            else audit_action "SSH切换为仅密钥登录" FAILED; safety_rollback_now; fi
             ;;
         2)
             backup_config
@@ -314,8 +327,9 @@ set_login_mode() {
                 rm -f "$CANDIDATE"; warn "已取消，配置未修改"; return
             fi
             safety_arm ssh_login || { rm -f "$CANDIDATE"; return 1; }
-            cp "$CANDIDATE" "$SSHD_CONFIG"; rm -f "$CANDIDATE"
-            if apply_and_restart; then info "已切换：密码 + 密钥均可登录 ✓"; audit_action "SSH启用密码和密钥登录" SUCCESS; safety_confirm; fi
+            ssh_install_candidate "$CANDIDATE" || return 1
+            if apply_and_restart; then info "已切换：密码 + 密钥均可登录 ✓"; audit_action "SSH启用密码和密钥登录" SUCCESS; safety_confirm
+            else audit_action "SSH启用密码和密钥登录" FAILED; safety_rollback_now; fi
             ;;
         3)
             warn "仅密码登录安全性较低，建议配合强密码使用！"
@@ -332,8 +346,9 @@ set_login_mode() {
                 rm -f "$CANDIDATE"; warn "已取消，配置未修改"; return
             fi
             safety_arm ssh_login || { rm -f "$CANDIDATE"; return 1; }
-            cp "$CANDIDATE" "$SSHD_CONFIG"; rm -f "$CANDIDATE"
-            if apply_and_restart; then info "已切换：仅密码登录 ✓"; audit_action "SSH切换为仅密码登录" SUCCESS; safety_confirm; fi
+            ssh_install_candidate "$CANDIDATE" || return 1
+            if apply_and_restart; then info "已切换：仅密码登录 ✓"; audit_action "SSH切换为仅密码登录" SUCCESS; safety_confirm
+            else audit_action "SSH切换为仅密码登录" FAILED; safety_rollback_now; fi
             ;;
         0) return ;;
         00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
@@ -388,12 +403,13 @@ change_port() {
         return
     fi
     safety_arm ssh_port || { rm -f "$CANDIDATE"; return 1; }
-    cp "$CANDIDATE" "$SSHD_CONFIG"; rm -f "$CANDIDATE"
+    ssh_install_candidate "$CANDIDATE" || return 1
 
     if ! sshd -t 2>/dev/null; then
         error "配置语法错误，自动回滚中..."
-        [ -n "${LAST_SSHD_BACKUP:-}" ] && [ -f "$LAST_SSHD_BACKUP" ] && cp "$LAST_SSHD_BACKUP" "$SSHD_CONFIG" 2>/dev/null && warn "已回滚配置"
-        return
+        safety_rollback_now
+        warn "已恢复修改前的配置"
+        return 1
     fi
 
     local OLD_PORT="${CURRENT_PORT:-22}"
@@ -402,8 +418,10 @@ change_port() {
 
     # 应用并重启（失败会自动回滚到旧配置）
     apply_and_restart || {
-        error "SSH 重启失败，已回滚。旧端口 ${OLD_PORT} 未改动，当前连接安全。"
-        return
+        safety_rollback_now
+        error "SSH 重启失败，已恢复修改前的配置。旧端口 ${OLD_PORT} 未改动，当前连接安全。"
+        audit_action "SSH端口 ${OLD_PORT} 修改为 $INPUT_PORT" FAILED
+        return 1
     }
     audit_action "SSH端口 ${CURRENT_PORT:-22} 修改为 $INPUT_PORT" SUCCESS
     ssh_port_report_listeners "$INPUT_PORT"

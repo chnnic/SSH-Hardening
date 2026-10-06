@@ -260,6 +260,8 @@ self_install() {
 # ── 强制从 GitHub 更新脚本 ────────────────────────────────
 self_update() {
     print_header "强制更新脚本"
+    # 更新后会 exec 新进程，新进程不知道当前的回滚计时器：先处理未确认的变更。
+    safety_resolve_pending || return 1
     echo -e "  ${DIM}${SCRIPT_URL}${NC}"
     echo ""
 
@@ -418,6 +420,7 @@ self_update() {
 # ── 回滚到更新前版本 ──────────────────────────────────────
 self_rollback() {
     print_header "回滚脚本版本"
+    safety_resolve_pending || return 1
     mkdir -p "$VPS_VERSION_DIR"
     local FILES=() f i=1
     while IFS= read -r f; do FILES+=("$f"); done < <(find "$VPS_VERSION_DIR" -maxdepth 1 -type f -name '*.sh' 2>/dev/null | sort -r)

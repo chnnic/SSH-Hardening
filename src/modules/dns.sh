@@ -143,6 +143,45 @@ dns_resolvconf_apply() {
     dns_resolv_nameservers_match "$RESOLV" "$V4_LIST" "$V6_LIST" "$HAS_V6"
 }
 
+# 生成 DNS 回滚时额外执行的命令：快照只含文件，NetworkManager 连接属性、
+# systemd-resolved 链路 DNS 和 resolvconf 接口记录都要按修改前的值显式恢复。
+dns_rollback_commands() {
+    local RESOLV="$1" CON IFACE OLD_DNS OLD_DOMAIN
+    local V4_IGNORE V4_DNS V6_IGNORE V6_DNS
+    if command -v nmcli >/dev/null 2>&1 && svc_is_active NetworkManager; then
+        while IFS= read -r CON; do
+            [ -n "$CON" ] || continue
+            { read -r V4_IGNORE; read -r V4_DNS; read -r V6_IGNORE; read -r V6_DNS; } < <(
+                nmcli -g ipv4.ignore-auto-dns,ipv4.dns,ipv6.ignore-auto-dns,ipv6.dns connection show "$CON" 2>/dev/null)
+            [ -n "$V4_IGNORE" ] || continue
+            printf 'nmcli connection modify %q ipv4.ignore-auto-dns %q ipv4.dns %q ipv6.ignore-auto-dns %q ipv6.dns %q >/dev/null 2>&1 || true\n' \
+                "$CON" "$V4_IGNORE" "$V4_DNS" "${V6_IGNORE:-no}" "$V6_DNS"
+        done < <(nmcli -g NAME connection show --active 2>/dev/null)
+        IFACE=$(default_iface)
+        [ -z "$IFACE" ] || printf 'nmcli device reapply %q >/dev/null 2>&1 || true\n' "$IFACE"
+    fi
+    if dns_systemd_resolved_linked "$RESOLV"; then
+        IFACE=$(default_iface)
+        if [ -n "$IFACE" ]; then
+            OLD_DNS=$(resolvectl dns "$IFACE" 2>/dev/null | awk -F': ' 'NF > 1 { print $2; exit }')
+            OLD_DOMAIN=$(resolvectl domain "$IFACE" 2>/dev/null | awk -F': ' 'NF > 1 { print $2; exit }')
+            if [ -n "$OLD_DNS" ]; then
+                # shellcheck disable=SC2086 # 多个 DNS 需要拆成多个参数
+                printf 'resolvectl dns %q' "$IFACE"; printf ' %q' $OLD_DNS; printf ' >/dev/null 2>&1 || true\n'
+                printf 'resolvectl domain %q' "$IFACE"
+                # shellcheck disable=SC2086
+                [ -z "$OLD_DOMAIN" ] || printf ' %q' $OLD_DOMAIN
+                printf ' >/dev/null 2>&1 || true\n'
+            else
+                printf 'resolvectl revert %q >/dev/null 2>&1 || true\n' "$IFACE"
+            fi
+        fi
+    fi
+    if command -v resolvconf >/dev/null 2>&1; then
+        printf '%s\n' 'resolvconf -d vps-tools >/dev/null 2>&1 || true' 'resolvconf -u >/dev/null 2>&1 || true'
+    fi
+}
+
 dns_write() {
     local V4_LIST="$1"
     local V6_LIST="$2"
@@ -150,7 +189,9 @@ dns_write() {
     local RESOLV="/etc/resolv.conf" ALL_DNS="$V4_LIST" BACKEND="static" CON
     [ "$HAS_V6" = "true" ] && [ -n "$V6_LIST" ] && ALL_DNS="$ALL_DNS $V6_LIST"
     confirm_change_preview "DNS 配置" "当前：$(awk '/^nameserver/ {printf "%s ", $2}' "$RESOLV" 2>/dev/null)" "目标：$ALL_DNS" || { warn "已取消"; return; }
-    safety_arm dns || return 1
+    local UNDO=() LINE
+    while IFS= read -r LINE; do UNDO+=("$LINE"); done < <(dns_rollback_commands "$RESOLV")
+    safety_arm dns "${UNDO[@]+"${UNDO[@]}"}" || return 1
 
     if command -v nmcli >/dev/null 2>&1 && svc_is_active NetworkManager; then
         BACKEND="NetworkManager"

@@ -851,10 +851,10 @@ self_reconcile_tc_after_update >/dev/null \
     warn() { :; }; error() { :; }; info() { :; }; audit_action() { :; }
     SAFETY_SCRIPT="$TMP/firing-rollback.sh"
     {
-        safety_rollback_prologue "$SAFETY_SCRIPT" | sed 's/^sleep 180$/sleep 0/'
+        safety_rollback_prologue "$SAFETY_SCRIPT"
         printf 'sleep 2\n: > %q\n' "$TMP/rollback-finished"
     } > "$SAFETY_SCRIPT"
-    bash "$SAFETY_SCRIPT" &
+    bash "$SAFETY_SCRIPT" 0 &
     SAFETY_PID=$!
     for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "${SAFETY_SCRIPT}.fired" ] && break; sleep 0.2; done
     if safety_confirm <<< "y" >/dev/null 2>&1; then
@@ -975,6 +975,145 @@ self_reconcile_tc_after_update >/dev/null \
         || { echo "IPv6 forwarding was enabled without accept_ra=2 on the RA interface" >&2; exit 1; }
     grep -qx 'net/ipv6/conf/eth0/accept_ra = 2' "$NFT_SYSCTL_FILE" && grep -qx 'net.ipv4.ip_forward = 1' "$NFT_SYSCTL_FILE" \
         || { echo "Forwarding settings were not persisted" >&2; exit 1; }
+)
+
+# Rollback removes config files that appeared after the snapshot, and never runs on an unreadable snapshot.
+(
+    FAKE="$TMP/fake-root"
+    mkdir -p "$FAKE/etc/ssh/sshd_config.d"
+    printf 'old\n' > "$FAKE/etc/ssh/sshd_config.d/10-old.conf"
+    tar -czf "$TMP/cleanup-snap.tar.gz" -C "$FAKE" etc/ssh/sshd_config.d
+    mkdir -p "$FAKE/etc/systemd/resolved.conf.d" "$FAKE/etc/sysctl.d"
+    printf 'PasswordAuthentication no\n' > "$FAKE/etc/ssh/sshd_config.d/99-new.conf"
+    printf '[Resolve]\nFallbackDNS=\n' > "$FAKE/etc/systemd/resolved.conf.d/99-vps-tools.conf"
+    printf 'precedence ::ffff:0:0/96 100\n' > "$FAKE/etc/gai.conf"
+    printf 'keep\n' > "$FAKE/etc/sysctl.d/50-user.conf"
+    if safety_rollback_cleanup "$TMP/missing-snap.tar.gz" "$FAKE" 2>/dev/null; then
+        echo "Rollback cleanup ran without a readable snapshot" >&2; exit 1
+    fi
+    [ -f "$FAKE/etc/ssh/sshd_config.d/99-new.conf" ] || { echo "Cleanup deleted files without a snapshot" >&2; exit 1; }
+    safety_rollback_cleanup "$TMP/cleanup-snap.tar.gz" "$FAKE" || { echo "Rollback cleanup failed" >&2; exit 1; }
+    [ -f "$FAKE/etc/ssh/sshd_config.d/10-old.conf" ] || { echo "Cleanup removed a snapshotted file" >&2; exit 1; }
+    [ ! -e "$FAKE/etc/ssh/sshd_config.d/99-new.conf" ] && [ ! -e "$FAKE/etc/systemd/resolved.conf.d/99-vps-tools.conf" ] \
+        && [ ! -e "$FAKE/etc/gai.conf" ] || { echo "Rollback left new drop-in files active" >&2; exit 1; }
+    [ -f "$FAKE/etc/sysctl.d/50-user.conf" ] || { echo "Cleanup touched an unmanaged file" >&2; exit 1; }
+)
+
+# The rollback script reloads an active ufw, runs cleanup and caller-specific undo commands.
+(
+    VPS_DATA_DIR="$TMP/rollback-v4"
+    mkdir -p "$VPS_DATA_DIR"
+    warn() { :; }; audit_action() { :; }
+    config_backup_create() { echo "$TMP/snap.tar.gz"; }
+    nohup() { return 0; }
+    ufw() { [ "$1" = status ] && echo 'Status: active'; }
+    safety_arm dns 'resolvconf -d vps-tools >/dev/null 2>&1 || true' >/dev/null
+    bash -n "$SAFETY_SCRIPT" || { echo "Rollback script has a syntax error" >&2; exit 1; }
+    grep -q 'ufw reload' "$SAFETY_SCRIPT" || { echo "Rollback does not reload an active ufw" >&2; exit 1; }
+    grep -q "^safety_rollback_cleanup '$TMP/snap.tar.gz' /" "$SAFETY_SCRIPT" || { echo "Rollback does not remove new files" >&2; exit 1; }
+    grep -qx 'resolvconf -d vps-tools >/dev/null 2>&1 || true' "$SAFETY_SCRIPT" || { echo "Rollback dropped the extra undo command" >&2; exit 1; }
+    SAFETY_PID="" SAFETY_SCRIPT=""
+)
+
+# A failed change rolls back immediately instead of leaving a timer that later clobbers other edits.
+(
+    warn() { :; }; error() { :; }; info() { :; }; audit_action() { :; }
+    SAFETY_SCRIPT="$TMP/now-rollback.sh"
+    {
+        printf '#!/bin/bash\n'
+        safety_rollback_prologue "$SAFETY_SCRIPT"
+        printf ': > %q\n' "$TMP/restored-now"
+    } > "$SAFETY_SCRIPT"
+    bash "$SAFETY_SCRIPT" &
+    SAFETY_PID=$!
+    TIMER=$SAFETY_PID
+    sleep 0.3
+    safety_rollback_now
+    [ -e "$TMP/restored-now" ] || { echo "Immediate rollback did not restore" >&2; exit 1; }
+    ! kill -0 "$TIMER" 2>/dev/null || { echo "Immediate rollback left the 180s timer running" >&2; exit 1; }
+    [ -z "$SAFETY_PID" ] && [ ! -e "$SAFETY_SCRIPT" ] || { echo "Immediate rollback did not clear its state" >&2; exit 1; }
+)
+
+# SSH failures (unwritable sshd_config, bad syntax, restart failure) roll back now and never report success.
+(
+    CALLS="$TMP/ssh-fail-calls"
+    SSHD_CONFIG="$TMP/ssh-fail/sshd_config"
+    mkdir -p "$TMP/ssh-fail"
+    print_header() { :; }; menu_div() { :; }; menu_item() { :; }; menu_pair() { :; }; info() { :; }; warn() { :; }; error() { :; }
+    audit_action() { echo "audit $2 $1" >> "$CALLS"; }
+    get_config() { echo 22; }; ssh_key_count() { echo 1; }
+    backup_config() { :; }; set_config_file() { :; }; sshd_comment_unmanaged_directive() { :; }
+    confirm_file_diff() { return 0; }; firewall_allow_port() { :; }; ssh_port_report_listeners() { :; }
+    safety_arm() { SAFETY_PID=1; }
+    safety_rollback_now() { echo rollback-now >> "$CALLS"; SAFETY_PID=""; }
+    safety_confirm() { echo confirm >> "$CALLS"; }
+
+    : > "$CALLS"; printf 'Port 22\n' > "$SSHD_CONFIG"
+    cp() { return 1; }
+    if printf '2222\n' | change_port >/dev/null 2>&1; then echo "change_port succeeded with an unwritable sshd_config" >&2; exit 1; fi
+    unset -f cp
+    grep -qx rollback-now "$CALLS" && ! grep -q 'audit SUCCESS' "$CALLS" \
+        || { echo "Unwritable sshd_config was not rolled back or was reported as success" >&2; exit 1; }
+
+    : > "$CALLS"
+    sshd() { return 1; }
+    if printf '2222\n' | change_port >/dev/null 2>&1; then echo "change_port succeeded with bad syntax" >&2; exit 1; fi
+    grep -qx rollback-now "$CALLS" || { echo "Syntax failure left the rollback timer pending" >&2; exit 1; }
+
+    : > "$CALLS"
+    sshd() { return 0; }; apply_and_restart() { return 1; }
+    if printf '2222\n' | change_port >/dev/null 2>&1; then echo "change_port succeeded after restart failure" >&2; exit 1; fi
+    grep -qx rollback-now "$CALLS" || { echo "Restart failure left the rollback timer pending" >&2; exit 1; }
+
+    : > "$CALLS"
+    printf '1\n' | set_login_mode >/dev/null 2>&1 || true
+    grep -qx rollback-now "$CALLS" && ! grep -qx confirm "$CALLS" \
+        || { echo "Login mode failure left the rollback timer pending" >&2; exit 1; }
+)
+
+# DNS rollback restores NetworkManager and systemd-resolved runtime settings, not only files.
+(
+    svc_is_active() { return 0; }
+    default_iface() { echo eth0; }
+    dns_systemd_resolved_linked() { return 0; }
+    nmcli() {
+        case "$*" in
+            "-g NAME connection show --active") echo 'Wired 1' ;;
+            "-g ipv4.ignore-auto-dns,ipv4.dns,ipv6.ignore-auto-dns,ipv6.dns connection show Wired 1") printf 'no\n\nno\n\n' ;;
+        esac
+    }
+    resolvectl() {
+        case "$1" in
+            dns) echo 'Link 2 (eth0): 10.0.0.53 10.0.0.54' ;;
+            domain) echo 'Link 2 (eth0): example.internal' ;;
+        esac
+    }
+    resolvconf() { :; }
+    OUT=$(dns_rollback_commands /etc/resolv.conf)
+    printf '%s\n' "$OUT" | grep -qx "nmcli connection modify Wired\\\\ 1 ipv4.ignore-auto-dns no ipv4.dns '' ipv6.ignore-auto-dns no ipv6.dns '' >/dev/null 2>&1 || true" \
+        || { echo "DNS rollback does not restore NetworkManager DNS: $OUT" >&2; exit 1; }
+    printf '%s\n' "$OUT" | grep -qx 'resolvectl dns eth0 10.0.0.53 10.0.0.54 >/dev/null 2>&1 || true' \
+        && printf '%s\n' "$OUT" | grep -qx 'resolvectl domain eth0 example.internal >/dev/null 2>&1 || true' \
+        || { echo "DNS rollback does not restore systemd-resolved link DNS: $OUT" >&2; exit 1; }
+    printf '%s\n' "$OUT" | grep -qx 'resolvconf -d vps-tools >/dev/null 2>&1 || true' \
+        || { echo "DNS rollback does not drop the resolvconf record" >&2; exit 1; }
+)
+
+# Exiting with 00 or self-updating while a rollback is pending must ask first.
+(
+    MARK="$TMP/exit-confirm"
+    SAFETY_PID=12345
+    safety_confirm() { echo asked > "$MARK"; SAFETY_PID=""; }
+    safe_clear() { :; }; warn() { :; }
+    menu_read CH 'x' <<< "00" >/dev/null 2>&1
+) || true
+[ -s "$TMP/exit-confirm" ] || { echo "00 exit skipped the pending rollback confirmation" >&2; exit 1; }
+(
+    print_header() { :; }
+    safety_resolve_pending() { return 1; }
+    curl() { echo "download attempted" > "$TMP/update-download"; return 1; }
+    if self_update >/dev/null 2>&1; then echo "self_update ran with an unconfirmed rollback" >&2; exit 1; fi
+    [ ! -e "$TMP/update-download" ] || { echo "self_update downloaded before resolving the pending rollback" >&2; exit 1; }
 )
 
 echo "Fault injection tests passed."

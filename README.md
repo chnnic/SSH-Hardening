@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.13.3
+# VPS 开荒脚本 V3.13.4
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -16,7 +16,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 ### 离线安装包
 
-适合不能访问 GitHub 的中国内地 VPS。以下下载与当前脚本一致的 **V3.13.3** 离线包。每次脚本版本更新都会一并构建、校验和发布对应离线包，并同步本节的下载链接。
+适合不能访问 GitHub 的中国内地 VPS。以下下载与当前脚本一致的 **V3.13.4** 离线包。每次脚本版本更新都会一并构建、校验和发布对应离线包，并同步本节的下载链接。
 
 **方式一：中国内地 VPS 通过加速链接直接下载**
 
@@ -24,12 +24,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 ```bash
 cd /root
-curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.3/vps-tools-offline-V3.13.3.tar.gz
-curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.3/vps-tools-offline-V3.13.3.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.13.3.tar.gz.sha256
+curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.4/vps-tools-offline-V3.13.4.tar.gz
+curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.4/vps-tools-offline-V3.13.4.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.13.4.tar.gz.sha256
 ```
 
-也可以点击下载：[离线安装包（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.3/vps-tools-offline-V3.13.3.tar.gz) · [SHA256 校验文件（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.3/vps-tools-offline-V3.13.3.tar.gz.sha256)。
+也可以点击下载：[离线安装包（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.4/vps-tools-offline-V3.13.4.tar.gz) · [SHA256 校验文件（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.4/vps-tools-offline-V3.13.4.tar.gz.sha256)。
 
 > 加速服务由第三方提供，可用性取决于当地网络；若不可用，请使用下方直连下载后上传的方式。SHA256 用于完整性核验；包和校验文件都来自同一镜像时，不能独立证明来源可信，安全要求较高时应从 GitHub 或其他可信渠道另行获取校验值。校验失败时不要继续安装。
 
@@ -38,24 +38,24 @@ sha256sum -c vps-tools-offline-V3.13.3.tar.gz.sha256
 先在一台可以访问 GitHub 的电脑或跳板机下载：
 
 ```bash
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.3/vps-tools-offline-V3.13.3.tar.gz
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.3/vps-tools-offline-V3.13.3.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.13.3.tar.gz.sha256
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.4/vps-tools-offline-V3.13.4.tar.gz
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.4/vps-tools-offline-V3.13.4.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.13.4.tar.gz.sha256
 ```
 
 再通过 `scp`、SFTP 或 WinSCP 将两个文件传到 VPS。Linux/macOS 示例：
 
 ```bash
-scp vps-tools-offline-V3.13.3.tar.gz* root@你的VPS地址:/root/
+scp vps-tools-offline-V3.13.4.tar.gz* root@你的VPS地址:/root/
 ```
 
 方式一直接下载或方式二上传完成后，确认两个文件都在 VPS 的 `/root` 目录，登录 VPS 后离线安装：
 
 ```bash
 cd /root
-sha256sum -c vps-tools-offline-V3.13.3.tar.gz.sha256
-tar -xzf vps-tools-offline-V3.13.3.tar.gz
-cd vps-tools-offline-V3.13.3
+sha256sum -c vps-tools-offline-V3.13.4.tar.gz.sha256
+tar -xzf vps-tools-offline-V3.13.4.tar.gz
+cd vps-tools-offline-V3.13.4
 bash install.sh
 v
 ```
@@ -722,6 +722,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.13.4** | 防断联回滚改造：回滚时删除快照之后新增的 drop-in（sshd_config.d、resolved.conf.d、NetworkManager 等）和本工具新建的 gai.conf、sysctl 文件；ufw 原本启用时用 reload 重新加载规则（原先 enable 不会生效）；DNS 回滚同时恢复 NetworkManager 连接 DNS、systemd-resolved 链路 DNS 并移除 resolvconf 记录；SSH 改端口/登录方式在写入失败、语法错误或重启失败时立即回滚，不再留下 180 秒后覆盖其它修改的计时器，写入 sshd_config 失败不再误报成功；有未确认的回滚时，按 00 退出或更新/回滚脚本前先询问确认 |
 | **V3.13.3** | 防锁死修复：SSH 改端口超过 180 秒才确认时，识别已自动回滚，不再同步 Fail2ban 或关闭旧端口（回滚一旦开始不可被中断）；通过 IPv6 登录或无 IPv4 默认路由时拒绝关闭 IPv6，回滚会恢复 IPv6 运行状态；DD 重装带上全部受支持的公钥并列出指纹确认；公钥识别支持 ECDSA / FIDO 与带选项前缀的行，生成密钥追加前补换行并原子写入；删除公钥需二次确认，删除当前会话公钥或最后一把公钥（且无法密码登录）时须输入 DELETE，并纳入防断联回滚；导出配置填目录时在目录内生成文件，不再改目录权限；卸载 ufw/firewalld 不再删除 SSH 放行规则；NFT/本地转发拒绝覆盖 SSH 端口，内核转发改为确认后按协议族开启，开启 IPv6 转发前把依赖 RA 的网卡设为 accept_ra=2 |
 | **V3.13.2** | TCP 增强新增“一键推荐”：TFO=3、ECN=1 + fallback=1、MTU=1 同一事务写入，先显示当前值与目标值并确认，任一项不支持则整体回滚；同步 BBR 独立版和离线包 |
 | **V3.13.1** | 修复场景预设在监听端口含连续端口时整次失败：`ip_local_reserved_ports` 按内核回读格式合并区间后写入；`fs.file-max` 原值更大时自动恢复，不再询问；“不再管理的场景参数”提示显示当前值与原值；swappiness 仅在配置应用成功后才移交 sysctl.conf。同步 BBR 独立版和离线包 |

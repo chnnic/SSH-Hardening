@@ -8,7 +8,7 @@ config_backup_allowed_roots() {
         etc/hostname etc/hosts \
         etc/ssh/sshd_config etc/ssh/sshd_config.d root/.ssh/authorized_keys \
         etc/fail2ban etc/ufw etc/firewalld etc/nftables.conf etc/nftables.d/vps-tools-nftpf.nft etc/nft-port-forward \
-        etc/sysctl.conf etc/sysctl.d/99-vps-bbr.conf etc/sysctl.d/99-ipv6-disable.conf \
+        etc/sysctl.conf etc/sysctl.d/99-vps-bbr.conf etc/sysctl.d/99-ipv6-disable.conf etc/sysctl.d/99-vps-nftpf-forward.conf \
         etc/gai.conf etc/resolv.conf etc/resolvconf.conf etc/systemd/resolved.conf etc/systemd/resolved.conf.d \
         etc/NetworkManager/conf.d etc/NetworkManager/system-connections etc/resolvconf/resolv.conf.d \
         etc/caddy root/ddns.sh root/.cf_token root/.hw_dns_aksk root/.cf_zone root/.cf_tg root/.cf_last_change \
@@ -91,7 +91,7 @@ config_backup_prune() {
 # 回滚脚本醒来后先屏蔽 TERM/INT/HUP 再写 .fired 标记：一旦开始恢复就不会被半途杀掉，
 # 取消方也能据此区分“已取消”和“已回滚”。
 safety_rollback_prologue() {
-    printf '%s\n' 'sleep 180' "trap '' TERM INT HUP" ": > $(printf '%q' "$1.fired")"
+    printf '%s\n' 'sleep "${1:-180}"' "trap '' TERM INT HUP" ": > $(printf '%q' "$1.fired")"
 }
 
 # PID 可能已退出并被系统复用：有 /proc 时核对命令行，确认仍是本工具的回滚脚本。
@@ -129,6 +129,51 @@ safety_disarm() {
 
 cancel_safety_timer() {
     safety_disarm
+}
+
+# 变更在本地已确认失败时立即执行回滚：不再留一个 180 秒后才触发、会顺带覆盖其它修改的计时器。
+safety_rollback_now() {
+    local PID="${SAFETY_PID:-}" SCRIPT="${SAFETY_SCRIPT:-}" i
+    [ -n "$PID" ] || return 0
+    SAFETY_PID="" SAFETY_SCRIPT=""
+    if [ -n "$SCRIPT" ] && [ ! -e "${SCRIPT}.fired" ] && safety_pid_is_ours "$PID" "$SCRIPT"; then
+        kill "$PID" 2>/dev/null || true
+    fi
+    wait "$PID" 2>/dev/null || true
+    if [ -n "$SCRIPT" ] && [ -f "$SCRIPT" ] && [ ! -e "${SCRIPT}.fired" ]; then
+        warn "正在立即恢复变更前的配置..."
+        bash "$SCRIPT" 0 >/dev/null 2>&1 || true
+    fi
+    for ((i = 0; i < 120; i++)); do
+        safety_pid_is_ours "$PID" "$SCRIPT" || break
+        sleep 1
+    done
+    rm -f "$SCRIPT" "${SCRIPT}.fired"
+    audit_action "变更失败，已立即回滚" SUCCESS
+}
+
+# 回滚时删除快照之后才出现的配置：tar 解包只会覆盖旧文件，新增的 drop-in 仍会生效。
+# 只处理“新增即生效”的目录和本工具会新建的单个文件。
+SAFETY_VOLATILE_DIRS="etc/ssh/sshd_config.d etc/systemd/resolved.conf.d etc/NetworkManager/conf.d etc/NetworkManager/system-connections"
+SAFETY_VOLATILE_FILES="etc/sysctl.d/99-ipv6-disable.conf etc/sysctl.d/99-vps-nftpf-forward.conf etc/gai.conf etc/resolvconf.conf etc/nftables.d/vps-tools-nftpf.nft"
+
+safety_rollback_cleanup() {
+    local SNAP="$1" ROOT="${2:-/}" LIST P F
+    tar -tzf "$SNAP" >/dev/null 2>&1 || return 1
+    LIST=$(tar -tzf "$SNAP" 2>/dev/null | sed -e 's#^\./##' -e 's#/$##')
+    # 快照不可读时绝不能按“全部是新增文件”处理。
+    [ -n "$LIST" ] || return 1
+    ROOT="${ROOT%/}"
+    for P in $SAFETY_VOLATILE_DIRS; do
+        [ -d "$ROOT/$P" ] || continue
+        while IFS= read -r F; do
+            [ -n "$F" ] || continue
+            printf '%s\n' "$LIST" | grep -qxF -- "${F#"$ROOT"/}" || rm -f -- "$F"
+        done < <(find "$ROOT/$P" -mindepth 1 \( -type f -o -type l \) 2>/dev/null)
+    done
+    for P in $SAFETY_VOLATILE_FILES; do
+        printf '%s\n' "$LIST" | grep -qxF -- "$P" || rm -f -- "$ROOT/$P"
+    done
 }
 
 # 同一时刻只能有一个回滚计时器：覆盖 SAFETY_PID 会留下无法取消的旧计时器，
@@ -2931,11 +2976,14 @@ EOF
     done
 }
 
+# 用法：safety_arm LABEL [回滚时额外执行的命令行...]（调用方负责用 printf %q 转义）。
 safety_arm() {
-    local LABEL="$1" SNAP SCRIPT UFW_STATE="inactive" FIREWALLD_STATE="inactive"
+    local LABEL="$1" SNAP SCRIPT UFW_STATE="inactive" FIREWALLD_STATE="inactive" EXTRA_UNDO=""
+    shift
+    [ "$#" -eq 0 ] || EXTRA_UNDO=$(printf '%s\n' "$@")
     safety_resolve_pending || return 1
     SNAP=$(config_backup_create "safety_${LABEL}" true) || return 1
-    command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active' && UFW_STATE="active"
+    command -v ufw >/dev/null 2>&1 && LC_ALL=C ufw status 2>/dev/null | grep -q 'Status: active' && UFW_STATE="active"
     svc_is_active firewalld && FIREWALLD_STATE="active"
     # 删除 sysctl 文件不会改变运行值：记录当前 IPv6 开关，回滚时显式写回。
     local V6_RESTORE="" KEY VALUE
@@ -2951,21 +2999,30 @@ safety_arm() {
     cat > "$SCRIPT" <<ROLLBACK_EOF
 #!/bin/bash
 $(safety_rollback_prologue "$SCRIPT")
+SAFETY_VOLATILE_DIRS='$SAFETY_VOLATILE_DIRS'
+SAFETY_VOLATILE_FILES='$SAFETY_VOLATILE_FILES'
+$(declare -f systemd_available restart_ssh nft_reload_managed_tables safety_rollback_cleanup)
 tar -xzf '$SNAP' -C / >/dev/null 2>&1
-tar -tzf '$SNAP' 2>/dev/null | grep -qx 'etc/sysctl.d/99-ipv6-disable.conf' || rm -f /etc/sysctl.d/99-ipv6-disable.conf
-${V6_RESTORE}$(declare -f systemd_available restart_ssh nft_reload_managed_tables)
+safety_rollback_cleanup '$SNAP' / || true
+${V6_RESTORE}
 sshd -t >/dev/null 2>&1 && restart_ssh
 systemctl restart systemd-resolved >/dev/null 2>&1 || true
 systemctl restart NetworkManager >/dev/null 2>&1 || true
 command -v resolvconf >/dev/null 2>&1 && resolvconf -u >/dev/null 2>&1 || true
+# ufw 已运行时 enable 不会重新加载规则文件，必须 reload。
 if command -v ufw >/dev/null 2>&1; then
-    if [ '$UFW_STATE' = active ]; then ufw --force enable >/dev/null 2>&1; else ufw --force disable >/dev/null 2>&1; fi
+    if [ '$UFW_STATE' = active ]; then
+        if LC_ALL=C ufw status 2>/dev/null | grep -q 'Status: active'; then ufw reload >/dev/null 2>&1; else ufw --force enable >/dev/null 2>&1; fi
+    else
+        ufw --force disable >/dev/null 2>&1
+    fi
 fi
 if command -v firewall-cmd >/dev/null 2>&1; then
     if [ '$FIREWALLD_STATE' = active ]; then systemctl start firewalld >/dev/null 2>&1; else systemctl stop firewalld >/dev/null 2>&1; fi
     firewall-cmd --reload >/dev/null 2>&1 || true
 fi
 nft_reload_managed_tables '$NFT_MANAGED_FILE' || true
+${EXTRA_UNDO}
 logger -t vps-tools '未确认连接，已自动恢复 $LABEL 配置'
 rm -f '$SCRIPT'
 ROLLBACK_EOF
