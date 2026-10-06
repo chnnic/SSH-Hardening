@@ -714,7 +714,7 @@ scripts/sync-from-upstream.sh --check ../SSH-Hardening
 tests/smoke.sh
 ```
 
-详细规则由主仓 [AGENTS.md](AGENTS.md) 和独立仓 `SYNC_BBR.md` 共同维护。
+详细规则见独立仓 `SYNC_BBR.md`。
 
 ---
 
