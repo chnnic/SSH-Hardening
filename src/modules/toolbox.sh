@@ -809,6 +809,8 @@ monitor_traffic_cycle_ensure_baseline() {
 $(monitor_traffic_totals)
 EOF
     CYCLE_START=$(monitor_traffic_current_cycle_start "${MON_TRAFFIC_RESET_DAY:-1}" "$TODAY")
+    # 算不出周期起点（如缺 python3）时不能当作新周期，否则每次运行都重置基线，月流量永远约等于 0。
+    [ -n "$CYCLE_START" ] || return 0
     if [ -z "${MON_TRAFFIC_CYCLE_BASELINE_DATE:-}" ] || [ "$MON_TRAFFIC_CYCLE_BASELINE_DATE" != "$CYCLE_START" ] || ! echo "${MON_TRAFFIC_CYCLE_BASELINE_BYTES:-0}" | grep -qE '^[0-9]+$'; then
         MON_TRAFFIC_CYCLE_BASELINE_DATE="$CYCLE_START"
         MON_TRAFFIC_CYCLE_BASELINE_BYTES="$CURRENT"
@@ -1117,8 +1119,39 @@ monitor_alert_daily_report_check() {
     audit_action "发送每日日报：$TODAY" SUCCESS
 }
 
+# cron 的 PATH 通常只有 /usr/bin:/bin，RHEL 的 ip 在 /usr/sbin：缺少它会让流量统计改用全部网卡，口径来回跳。
 monitor_alert_cron_command() {
-    printf '%s --monitor-alert >> /var/log/vps-monitor.log 2>&1' "${SVC_PATH:-${LOCAL_SCRIPT:-$0}}"
+    printf 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin %s --monitor-alert >> /var/log/vps-monitor.log 2>&1' "${SVC_PATH:-${LOCAL_SCRIPT:-$0}}"
+}
+
+monitor_alert_runner_valid() {
+    self_script_valid "$LOCAL_SCRIPT" && grep -qF -- '--monitor-alert)' "$LOCAL_SCRIPT" 2>/dev/null
+}
+
+# 定时任务执行的是本地安装的脚本；curl 直接运行或跳过安装的用户没有它，告警会静默失效。
+monitor_alert_ensure_runner() {
+    local SOURCE
+    monitor_alert_runner_valid && return 0
+    SOURCE=$(self_resolve_script_source "$0" 2>/dev/null || true)
+    if [ -n "$SOURCE" ]; then
+        self_atomic_replace "$SOURCE" "$LOCAL_SCRIPT" || { error "无法安装监控定时任务执行脚本"; return 1; }
+        chmod 755 "$LOCAL_SCRIPT" 2>/dev/null || true
+    else
+        info "定时监控需要本地完整脚本，正在安装..."
+        self_install || return 1
+    fi
+    monitor_alert_runner_valid || { error "本地脚本缺少监控定时任务入口"; return 1; }
+}
+
+# 日期计算、通知发送都依赖 python3；Alpine / OpenWrt 默认没有。
+monitor_alert_ensure_python() {
+    command -v python3 >/dev/null 2>&1 && return 0
+    warn "监控告警需要 python3（日期计算、Telegram 通知），当前系统未安装"
+    local ANSWER
+    read -rp "  现在安装 python3？(Y/n，默认Y): " ANSWER
+    [ -z "$ANSWER" ] && ANSWER=y
+    echo "$ANSWER" | grep -qiE '^y(es)?$' || return 1
+    pkg_install python3 && command -v python3 >/dev/null 2>&1 || { error "python3 安装失败"; return 1; }
 }
 
 monitor_alert_acquire_lock() {
@@ -1162,6 +1195,8 @@ monitor_alert_cron_without_managed() {
 
 monitor_alert_install_cron() {
     local CMD DAILY_EXPR
+    monitor_alert_ensure_python || { warn "缺少 python3，未安装定时监控"; return 1; }
+    monitor_alert_ensure_runner || return 1
     command -v crontab >/dev/null 2>&1 || ddns_ensure_cron >/dev/null 2>&1 || true
     command -v crontab >/dev/null 2>&1 || { warn "未检测到 crontab，无法安装定时监控"; return 1; }
     CMD=$(monitor_alert_cron_command)
@@ -1196,7 +1231,13 @@ monitor_alert_cron_status() {
             crontab -l 2>/dev/null | grep -Fq -e "$MONITOR_DAILY_CRON_MARKER" -e "# vps-monitor-daily-report" && echo "已安装" || echo "未安装"
             ;;
         *)
-            crontab -l 2>/dev/null | grep -Fq -e "$MONITOR_CRON_MARKER" -e "# vps-monitor-alert" && echo "已安装" || echo "未安装"
+            if ! crontab -l 2>/dev/null | grep -Fq -e "$MONITOR_CRON_MARKER" -e "# vps-monitor-alert"; then
+                echo "未安装"
+            elif ! monitor_alert_runner_valid; then
+                echo "已安装（执行脚本缺失，请重新启用）"
+            else
+                echo "已安装"
+            fi
             ;;
     esac
 }
@@ -1600,8 +1641,25 @@ monitor_alert_any_service_state() {
     [ "$SEEN_STOPPED" = yes ] && echo stopped || echo unknown
 }
 
+# ssh.socket 激活的系统在首次登录前 ssh.service 为 inactive；OpenWrt 用 dropbear 且没有 systemctl/rc-service。
+# 服务状态查不到时以实际监听为准；仍无法判断就返回 unknown，不发告警。
 monitor_alert_ssh_state() {
-    monitor_alert_any_service_state ssh sshd
+    local STATE P LISTEN=""
+    STATE=$(monitor_alert_any_service_state ssh sshd ssh.socket dropbear)
+    [ "$STATE" = running ] && { echo running; return 0; }
+    if command -v ss >/dev/null 2>&1; then
+        LISTEN=$(ss -H -ltn 2>/dev/null | awk '{print $4}')
+    elif command -v netstat >/dev/null 2>&1; then
+        LISTEN=$(netstat -ltn 2>/dev/null | awk '$1 ~ /^tcp/ {print $4}')
+    fi
+    if [ -n "$LISTEN" ]; then
+        for P in $(ssh_protected_ports); do
+            printf '%s\n' "$LISTEN" | grep -qE "[:.]${P}\$" && { echo running; return 0; }
+        done
+        echo stopped
+        return 0
+    fi
+    echo "$STATE"
 }
 
 monitor_alert_resource_check() {
@@ -1633,7 +1691,7 @@ monitor_alert_resource_check() {
             LEVEL=$(monitor_alert_worst_level "$LEVEL" warning)
         fi
     fi
-    if [ "${MON_CHECK_SSH:-yes}" = yes ] && [ "$(monitor_alert_ssh_state)" != running ]; then
+    if [ "${MON_CHECK_SSH:-yes}" = yes ] && [ "$(monitor_alert_ssh_state)" = stopped ]; then
         ISSUES="${ISSUES}SSH 服务异常  "
         ISSUE_KEYS="${ISSUE_KEYS}ssh,"
         LEVEL=$(monitor_alert_worst_level "$LEVEL" critical)
@@ -2764,10 +2822,13 @@ EOF
                             MON_DAILY_REPORT_ENABLED=yes
                             [ -z "${MON_DAILY_REPORT_TIME:-}" ] && MON_DAILY_REPORT_TIME="08:00"
                             monitor_alert_save_cfg
-                            MON_ENABLED=yes
-                            monitor_alert_save_cfg
-                            monitor_alert_install_cron
-                            info "每日日报已启用"
+                            if monitor_alert_install_cron; then
+                                MON_ENABLED=yes
+                                monitor_alert_save_cfg
+                                info "每日日报已启用"
+                            else
+                                error "每日日报定时任务安装失败"
+                            fi
                             ;;
                         2)
                             MON_DAILY_REPORT_ENABLED=no
@@ -2976,11 +3037,13 @@ EOF
                 ui_pause
                 ;;
             9)
-                MON_ENABLED=yes
-                monitor_alert_save_cfg
-                monitor_alert_install_cron
-                ddns_ensure_cron >/dev/null 2>&1 || true
-                info "已启用定时告警"
+                if monitor_alert_install_cron; then
+                    MON_ENABLED=yes
+                    monitor_alert_save_cfg
+                    info "已启用定时告警"
+                else
+                    error "定时告警未启用"
+                fi
                 ;;
             10)
                 MON_ENABLED=no
@@ -3305,22 +3368,26 @@ system_hostname_sed_escape() {
 }
 
 system_hostname_sync_hosts() {
-    local OLD_NAME="$1" NEW_NAME="$2" OLD_ESC NEW_ESC
-    [ -f /etc/hosts ] || printf '127.0.0.1 localhost\n' > /etc/hosts
+    local OLD_NAME="$1" NEW_NAME="$2" OLD_ESC NEW_ESC HOSTS="${SYSTEM_HOSTS_FILE:-/etc/hosts}"
+    [ -f "$HOSTS" ] || printf '127.0.0.1 localhost\n' > "$HOSTS"
+    # 旧名是 localhost 这类回环名（Alpine 默认、部分模板）时不能替换，否则 hosts 里的 localhost 会消失。
+    case "$OLD_NAME" in
+        localhost|localhost.localdomain|localhost4|localhost4.localdomain4|localhost6|localhost6.localdomain6|ip6-localhost|ip6-loopback) OLD_NAME="" ;;
+    esac
     if [ -n "$OLD_NAME" ] && [ "$OLD_NAME" != "$NEW_NAME" ]; then
         OLD_ESC=$(system_hostname_sed_escape "$OLD_NAME")
         NEW_ESC=$(system_hostname_sed_escape "$NEW_NAME")
-        sed -i.vps-hostname.bak -E "s/(^|[[:space:]])${OLD_ESC}([[:space:]#]|$)/\\1${NEW_NAME}\\2/g" /etc/hosts 2>/dev/null || true
+        sed -i.vps-hostname.bak -E "s/(^|[[:space:]])${OLD_ESC}([[:space:]#]|$)/\\1${NEW_NAME}\\2/g" "$HOSTS" 2>/dev/null || true
     fi
     NEW_ESC=$(system_hostname_sed_escape "$NEW_NAME")
-    if grep -Eq "(^|[[:space:]])${NEW_ESC}([[:space:]]|$)" /etc/hosts 2>/dev/null; then
+    if grep -Eq "(^|[[:space:]])${NEW_ESC}([[:space:]]|$)" "$HOSTS" 2>/dev/null; then
         return 0
     fi
-    if grep -qE '^[[:space:]]*127\.0\.1\.1[[:space:]]' /etc/hosts 2>/dev/null; then
-        sed -i.vps-hostname.bak -E "/^[[:space:]]*127\.0\.1\.1[[:space:]]/s/$/ ${NEW_NAME}/" /etc/hosts 2>/dev/null \
-            || printf '127.0.1.1 %s\n' "$NEW_NAME" >> /etc/hosts
+    if grep -qE '^[[:space:]]*127\.0\.1\.1[[:space:]]' "$HOSTS" 2>/dev/null; then
+        sed -i.vps-hostname.bak -E "/^[[:space:]]*127\.0\.1\.1[[:space:]]/s/$/ ${NEW_NAME}/" "$HOSTS" 2>/dev/null \
+            || printf '127.0.1.1 %s\n' "$NEW_NAME" >> "$HOSTS"
     else
-        printf '127.0.1.1 %s\n' "$NEW_NAME" >> /etc/hosts
+        printf '127.0.1.1 %s\n' "$NEW_NAME" >> "$HOSTS"
     fi
 }
 
