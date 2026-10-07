@@ -1287,4 +1287,97 @@ self_reconcile_tc_after_update >/dev/null \
         || { echo "IPv6 egress was reported as IPv4 preference success" >&2; exit 1; }
 )
 
+# DDNS: an existing record follows the configured proxy/TTL even when the IP is unchanged.
+(
+    info() { :; }; error() { :; }
+    PATCHES="$TMP/cf-patches"
+    : > "$PATCHES"
+    ddns_cf_curl() { printf '%s\n' "$*" >> "$PATCHES"; printf '{"success":true}'; }
+    REC='{"success":true,"result":[{"id":"r1","proxied":false,"ttl":60}]}'
+    ddns_cf_record_sync_settings zone tok r1 "$REC" 60 false || { echo "Matching settings failed" >&2; exit 1; }
+    [ ! -s "$PATCHES" ] || { echo "Matching settings were patched" >&2; exit 1; }
+    ddns_cf_record_sync_settings zone tok r1 "$REC" 60 true || { echo "Proxy sync failed" >&2; exit 1; }
+    grep -q -- '-X PATCH' "$PATCHES" && grep -q '"proxied":true' "$PATCHES" \
+        || { echo "Enabling the proxy did not update the existing record" >&2; exit 1; }
+    : > "$PATCHES"
+    ddns_cf_record_sync_settings zone tok r1 '{"success":true,"result":[{"id":"r1","proxied":true,"ttl":1}]}' 60 true
+    [ ! -s "$PATCHES" ] || { echo "Proxied record with automatic TTL was patched every time" >&2; exit 1; }
+)
+
+# Generated Cloudflare updater: API errors are not "missing", private IPv4 is rejected, settings sync works.
+(
+    TEMPLATE="$TMP/cf-template.sh"
+    awk "/<< 'DDNS_INNER'/{f=1;next} /^DDNS_INNER\$/{f=0} f" "$ROOT/src/modules/ddns.sh" > "$TEMPLATE"
+    eval "$(awk '/^cf_record_info\(\) \{/,/^}/' "$TEMPLATE")"
+    eval "$(awk '/^valid_ipv4\(\) \{/,/^}/' "$TEMPLATE")"
+    eval "$(awk '/^sync_record_settings\(\) \{/,/^}/' "$TEMPLATE")"
+    [ "$(printf '{"success":false,"errors":[{"code":9109}]}' | cf_record_info A a.example.com)" = 'QUERY_FAILED|' ] \
+        || { echo "Cloudflare API failure was reported as a missing record" >&2; exit 1; }
+    if valid_ipv4 10.0.0.5; then echo "Private IPv4 accepted for DDNS" >&2; exit 1; fi
+    valid_ipv4 8.8.8.8 || { echo "Public IPv4 rejected" >&2; exit 1; }
+    LOG_FILE="$TMP/cf-runtime.log"; PROXIED=true; TTL=60; ZONE_ID=z; API_TOKEN=t
+    cf_curl() { printf '%s\n' "$*" >> "$TMP/cf-runtime-calls"; printf '{"success":true}'; }
+    sync_record_settings A a.example.com r1 '{"result":{"proxied":false,"ttl":60}}'
+    grep -q -- '-X PATCH' "$TMP/cf-runtime-calls" && grep -q '已同步代理/TTL' "$LOG_FILE" \
+        || { echo "Generated updater does not sync proxy/TTL when the IP is unchanged" >&2; exit 1; }
+)
+
+# DDNS cron is enabled at boot on OpenRC, not only started.
+(
+    CALLS="$TMP/cron-svc-calls"
+    : > "$CALLS"
+    DDNS_INITD_DIR="$TMP/initd"
+    mkdir -p "$DDNS_INITD_DIR"; : > "$DDNS_INITD_DIR/crond"
+    systemd_available() { return 1; }
+    rc-update() { echo "rc-update $*" >> "$CALLS"; }
+    rc-service() { echo "rc-service $*" >> "$CALLS"; }
+    service() { return 1; }
+    ddns_cron_service_running() { return 0; }
+    ddns_start_cron_service
+    grep -qx 'rc-update add crond default' "$CALLS" || { echo "crond was started but not enabled at boot" >&2; exit 1; }
+)
+
+# Monitoring: cron gets a full PATH, never installs without a runnable local script, SSH state uses real listeners.
+(
+    error() { :; }; warn() { :; }; info() { :; }
+    [[ "$(monitor_alert_cron_command)" = PATH=/usr/local/sbin:*/usr/sbin:*' --monitor-alert '* ]] \
+        || { echo "Monitor cron command lacks /usr/sbin in PATH" >&2; exit 1; }
+    monitor_alert_ensure_python() { return 0; }
+    self_script_valid() { return 1; }
+    self_resolve_script_source() { :; }
+    self_install() { return 1; }
+    crontab() { echo "crontab $*" >> "$TMP/mon-crontab"; }
+    if monitor_alert_install_cron; then echo "Monitor cron installed without a local runner" >&2; exit 1; fi
+    [ ! -e "$TMP/mon-crontab" ] || { echo "Monitor cron was written without a local runner" >&2; exit 1; }
+
+    monitor_alert_any_service_state() { echo unknown; }
+    sshd_effective_ports() { echo 22; }
+    ss() { printf 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:*\n'; }
+    [ "$(monitor_alert_ssh_state)" = running ] || { echo "Listening sshd reported as down" >&2; exit 1; }
+    ss() { printf 'LISTEN 0 128 0.0.0.0:80 0.0.0.0:*\n'; }
+    [ "$(monitor_alert_ssh_state)" = stopped ] || { echo "Missing SSH listener not detected" >&2; exit 1; }
+)
+
+# Monthly traffic is not reset every run when the cycle start cannot be computed.
+(
+    MON_TRAFFIC_ENABLED=yes
+    MON_TRAFFIC_CYCLE_BASELINE_DATE=2026-10-01
+    MON_TRAFFIC_CYCLE_BASELINE_BYTES=1000
+    monitor_traffic_totals() { echo '500 500 999999'; }
+    monitor_traffic_current_cycle_start() { :; }
+    monitor_alert_save_cfg() { :; }
+    monitor_traffic_cycle_ensure_baseline
+    [ "$MON_TRAFFIC_CYCLE_BASELINE_BYTES" = 1000 ] || { echo "Traffic cycle baseline was reset without a cycle start" >&2; exit 1; }
+)
+
+# Renaming from a loopback hostname keeps localhost resolvable.
+(
+    SYSTEM_HOSTS_FILE="$TMP/hosts"
+    printf '127.0.0.1 localhost localhost.localdomain\n::1 localhost ip6-localhost\n' > "$SYSTEM_HOSTS_FILE"
+    system_hostname_sync_hosts localhost relay01
+    grep -qx '127.0.0.1 localhost localhost.localdomain' "$SYSTEM_HOSTS_FILE" && grep -qx '::1 localhost ip6-localhost' "$SYSTEM_HOSTS_FILE" \
+        || { echo "Hostname change replaced localhost entries" >&2; exit 1; }
+    grep -qx '127.0.1.1 relay01' "$SYSTEM_HOSTS_FILE" || { echo "New hostname was not added to hosts" >&2; exit 1; }
+)
+
 echo "Fault injection tests passed."

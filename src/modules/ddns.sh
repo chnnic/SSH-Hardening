@@ -637,6 +637,41 @@ ddns_cf_record_ensure() {
         fi
     else
         info "${type} 记录 ${domain} 已存在 ✓"
+        ddns_cf_record_sync_settings "$zone_id" "$token" "$(printf '%s\n' "$exact_records" | cut -f1)" \
+            "$record_resp" "$ttl" "$proxied" || return 1
+    fi
+}
+
+# 已存在的记录也要和配置的代理（橙云）/ TTL 一致，否则改了配置也不会生效（IP 不变时不发更新）。
+# 开启代理时 Cloudflare 固定 TTL 为自动，只比较代理开关。
+ddns_cf_record_sync_settings() {
+    local zone_id="$1" token="$2" record_id="$3" record_json="$4" ttl="$5" proxied="$6" current want patch_resp
+    current=$(DDNS_CF_JSON="$record_json" python3 - "$record_id" <<'PY' 2>/dev/null
+import json, os, sys
+try:
+    data = json.loads(os.environ.get("DDNS_CF_JSON", "{}"))
+    result = data.get("result")
+    records = result if isinstance(result, list) else [result]
+    for r in records:
+        if str(r.get("id")) == sys.argv[1]:
+            print(str(r.get("proxied")).lower(), r.get("ttl"))
+            break
+except Exception:
+    pass
+PY
+)
+    [ -n "$current" ] || return 0
+    if [ "$proxied" = true ]; then want="true"; else want="false ${ttl}"; fi
+    case "$current" in "$want"|"$want "*) return 0 ;; esac
+    patch_resp=$(ddns_cf_curl "$token" -s -X PATCH --max-time 10 \
+        "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${record_id}" \
+        -H "Content-Type: application/json" \
+        --data "$(printf '{"ttl":%s,"proxied":%s}' "$ttl" "$proxied")")
+    if printf '%s' "$patch_resp" | python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("success") is True else 1)' 2>/dev/null; then
+        info "已同步记录的代理 / TTL 设置（proxied=${proxied}，ttl=${ttl}）✓"
+    else
+        error "同步代理 / TTL 设置失败，请检查 Token 权限"
+        return 1
     fi
 }
 
@@ -706,6 +741,8 @@ ddns_line_from_state_file() {
         missing) printf '[%s] ERROR: %s 记录不存在 %s\n' "$ts" "$record_type" "$domain" ;;
         duplicate) printf '[%s] ERROR: %s %s 存在 %s 条重复记录\n' "$ts" "$record_type" "$domain" "${old_ip:-?}" ;;
         query_failed) printf '[%s] WARN: %s %s 无法获取当前记录值\n' "$ts" "$record_type" "$domain" ;;
+        api_failed) printf '[%s] ERROR: %s %s 查询 DNS 记录失败（API 错误或 Token 无效）\n' "$ts" "$record_type" "$domain" ;;
+        zone_failed) printf '[%s] ERROR: %s %s 获取 Zone 失败（API 错误或 Token 无效）\n' "$ts" "$record_type" "$domain" ;;
         verify_skipped) printf '[%s] WARN: %s %s 二次校验异常，跳过更新\n' "$ts" "$record_type" "$domain" ;;
         update_failed) printf '[%s] ERROR: %s %s 更新失败 %s → %s\n' "$ts" "$record_type" "$domain" "${old_ip:-?}" "${new_ip:-?}" ;;
         *) printf '[%s] %s: %s %s %s → %s\n' "$ts" "$state" "$record_type" "$domain" "${old_ip:-?}" "${new_ip:-?}" ;;
@@ -879,14 +916,23 @@ ddns_ensure_cron() {
     fi
 }
 
+# 既要立即启动，也要设为开机自启：动态 IP 往往正是在重启时变化。
 ddns_start_cron_service() {
+    local svc
     for svc in cron crond dcron; do
         if systemd_available; then
             systemctl enable "$svc" --quiet 2>/dev/null || true
             systemctl start "$svc" 2>/dev/null || true
         fi
+        if command -v rc-update &>/dev/null && [ -e "${DDNS_INITD_DIR:-/etc/init.d}/$svc" ]; then
+            rc-update add "$svc" default >/dev/null 2>&1 || true
+        fi
         if command -v rc-service &>/dev/null; then
             rc-service "$svc" start 2>/dev/null || true
+        elif [ -x "${DDNS_INITD_DIR:-/etc/init.d}/$svc" ]; then
+            # OpenWrt（procd）没有 rc-service，bash 里也没有 ash 的 service 函数。
+            "${DDNS_INITD_DIR:-/etc/init.d}/$svc" enable >/dev/null 2>&1 || true
+            "${DDNS_INITD_DIR:-/etc/init.d}/$svc" start >/dev/null 2>&1 || true
         fi
         if command -v service &>/dev/null; then
             service "$svc" start >/dev/null 2>&1 || true
@@ -1355,9 +1401,10 @@ for line in sys.stdin:
 '
 }
 
+# 只接受公网地址：回显服务偶尔返回 10.x / 127.x 等内网地址，不能推送到 DNS。
 valid_ipv4() {
-    echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' && \
-    echo "$1" | awk -F. '{for(i=1;i<=4;i++) if($i<0||$i>255) exit 1}'
+    echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+    python3 -c "import ipaddress,sys; ip=ipaddress.ip_address(sys.argv[1]); sys.exit(0 if ip.version == 4 and ip.is_global else 1)" "$1" 2>/dev/null
 }
 
 valid_ipv6() {
@@ -1378,6 +1425,7 @@ try:
 except Exception:
     raise SystemExit(0)
 if data.get("success") is not True or not isinstance(data.get("result"), list):
+    print("QUERY_FAILED|")
     raise SystemExit(0)
 matches = []
 for record in data["result"]:
@@ -1389,6 +1437,8 @@ if len(matches) > 1:
 elif matches:
     content = str(matches[0].get("content") or "").replace("\n", " ").replace("|", " ")
     print(f"{matches[0]['id']}|{content}")
+else:
+    print("|")
 PY
 }
 
@@ -1400,7 +1450,32 @@ fi
 ZONE_ID=$(cf_curl "${API_TOKEN}" -s --max-time 8 "https://api.cloudflare.com/client/v4/zones?name=${ZONE}" |     python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
 [ -z "$ZONE_ID" ] && {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 获取 Zone ID 失败" >> "$LOG_FILE"
+    # 写入状态，菜单才不会继续显示上一次的“OK 未变化”。
+    is_true "$ENABLE_A" && write_record_status A "$DOMAIN4" zone_failed "" ""
+    is_true "$ENABLE_AAAA" && write_record_status AAAA "$DOMAIN6" zone_failed "" ""
     exit 1
+}
+
+# IP 未变化时也要让代理（橙云）/ TTL 跟配置一致；开启代理时 Cloudflare 固定 TTL 为自动，只比较代理开关。
+sync_record_settings() {
+    local TYPE="$1" DOMAIN_NAME="$2" RECORD_ID="$3" RECORD_JSON="$4" CURRENT WANT RESULT
+    CURRENT=$(printf '%s' "$RECORD_JSON" | python3 -c "import sys,json; r=json.load(sys.stdin)['result']; print(str(r.get('proxied')).lower(), r.get('ttl'))" 2>/dev/null) || return 0
+    [ -n "$CURRENT" ] || return 0
+    if [ "$PROXIED" = true ]; then
+        [ "${CURRENT%% *}" = true ] && return 0
+    else
+        WANT="false ${TTL}"
+        [ "$CURRENT" = "$WANT" ] && return 0
+    fi
+    RESULT=$(cf_curl "${API_TOKEN}" -s -X PATCH --max-time 10 \
+        "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" \
+        -H "Content-Type: application/json" \
+        --data "{\"ttl\":${TTL},\"proxied\":${PROXIED}}")
+    if [ "$(printf '%s' "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('success'))" 2>/dev/null)" = True ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} ${DOMAIN_NAME} 已同步代理/TTL 设置（proxied=${PROXIED} ttl=${TTL}）" >> "$LOG_FILE"
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: ${TYPE} ${DOMAIN_NAME} 同步代理/TTL 设置失败" >> "$LOG_FILE"
+    fi
 }
 
 update_record() {
@@ -1417,6 +1492,12 @@ update_record() {
             write_record_status "$TYPE" "$DOMAIN_NAME" duplicate "$RECORD_COUNT" "$NEW_IP"
             return 1
             ;;
+        QUERY_FAILED\|*|"")
+            # API 报错、Token 失效、限流或网络失败：不能误报成“记录不存在”。
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ${TYPE} ${DOMAIN_NAME} 查询 DNS 记录失败（API 错误或 Token 无效）" >> "$LOG_FILE"
+            write_record_status "$TYPE" "$DOMAIN_NAME" api_failed "" "$NEW_IP"
+            return 1
+            ;;
     esac
     RECORD_ID=${RECORD_INFO%%|*}
     [ -z "$RECORD_ID" ] && {
@@ -1424,7 +1505,9 @@ update_record() {
         write_record_status "$TYPE" "$DOMAIN_NAME" missing "" "$NEW_IP"
         return 1
     }
-    OLD_IP=$(cf_curl "${API_TOKEN}" -s --max-time 8         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" |         python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'])" 2>/dev/null)
+    local RECORD_JSON
+    RECORD_JSON=$(cf_curl "${API_TOKEN}" -s --max-time 8 "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}")
+    OLD_IP=$(printf '%s' "$RECORD_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'])" 2>/dev/null)
     # OLD_IP 为空说明查询失败，跳过本次更新避免误推 Telegram
     if [ -z "$OLD_IP" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: ${TYPE} 无法获取当前记录值，跳过更新" >> "$LOG_FILE"
@@ -1448,6 +1531,7 @@ update_record() {
         else
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] OK: ${TYPE} ${DOMAIN_NAME} 未变化 ${NEW_IP}" >> "$LOG_FILE"
         fi
+        sync_record_settings "$TYPE" "$DOMAIN_NAME" "$RECORD_ID" "$RECORD_JSON"
         write_record_status "$TYPE" "$DOMAIN_NAME" unchanged "$OLD_IP" "$NEW_IP"
         return 0
     fi
@@ -1484,7 +1568,7 @@ update_record() {
     local JSON_BODY
     JSON_BODY=$(printf '{"type":"%s","name":"%s","content":"%s","ttl":%s,"proxied":%s}' \
         "$TYPE" "$DOMAIN_NAME" "$NEW_IP" "$TTL" "$PROXIED")
-    RESULT=$(cf_curl "${API_TOKEN}" -s -X PUT --max-time 10 \
+    RESULT=$(cf_curl "${API_TOKEN}" -s -X PATCH --max-time 10 \
         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" \
         -H "Content-Type: application/json" \
         --data "$JSON_BODY")
@@ -1997,9 +2081,10 @@ for line in sys.stdin:
 '
 }
 
+# 只接受公网地址：回显服务偶尔返回 10.x / 127.x 等内网地址，不能推送到 DNS。
 valid_ipv4() {
-    echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' && \
-    echo "$1" | awk -F. '{for(i=1;i<=4;i++) if($i<0||$i>255) exit 1}'
+    echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+    python3 -c "import ipaddress,sys; ip=ipaddress.ip_address(sys.argv[1]); sys.exit(0 if ip.version == 4 and ip.is_global else 1)" "$1" 2>/dev/null
 }
 
 valid_ipv6() {
