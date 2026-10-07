@@ -578,4 +578,105 @@ fixture menu_navigation
 )
 [ ! -s "$WRITE_LOG" ] || fail 'menu navigation wrote sysctl'
 
+# A backup without routing keys must not silently switch off persisted forwarding.
+fixture restore_keeps_unlisted_routing
+forwarding_fixture
+printf '1\n' > "$(bbr_sysctl_path net.ipv4.ip_forward)"
+printf '2\n' > "$(bbr_sysctl_path net.ipv6.conf.default.accept_ra)"
+printf 'net.core.default_qdisc = fq_codel\nnet.ipv4.tcp_congestion_control = cubic\nnet.ipv4.ip_forward = 1\nnet.ipv6.conf.default.accept_ra = 2\n' > "$SYSCTL_FILE"
+printf 'net.ipv4.ip_forward = 0\nnet.ipv6.conf.default.accept_ra = 1\n' > "$BBR_BASELINE_FILE"
+printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\n' > "$SYSCTL_FILE.bak.20260601_000000"
+printf '1\n' | bbr_restore_sysctl >/dev/null 2>&1 || fail 'restore of an old backup failed'
+[ "$(sysctl -n net.ipv4.ip_forward)" = 1 ] && [ "$(sysctl -n net.ipv6.conf.default.accept_ra)" = 2 ] \
+    || fail 'restore switched off forwarding the backup did not mention'
+[ "$(bbr_config_value "$(cat "$SYSCTL_FILE")" net.ipv4.ip_forward)" = 1 ] || fail 'restore dropped persisted forwarding'
+
+# Re-applying a preset with default answers keeps persisted forwarding.
+fixture reapply_keeps_forwarding
+forwarding_fixture
+printf '1\n' > "$(bbr_sysctl_path net.ipv4.ip_forward)"
+printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\nnet.ipv4.ip_forward = 1\n' > "$SYSCTL_FILE"
+printf 'net.ipv4.ip_forward = 0\n' > "$BBR_BASELINE_FILE"
+CONFIG=$(bbr_generate_config 8192 8192 balanced 0)
+printf '\n' | bbr_apply_sysctl "$CONFIG" ask '' '' '' "$(cat "$SYSCTL_FILE")" >/dev/null 2>&1 || fail 'preset re-apply failed'
+[ "$(sysctl -n net.ipv4.ip_forward)" = 1 ] || fail 'preset re-apply changed forwarding'
+[ "$(bbr_config_value "$(cat "$SYSCTL_FILE")" net.ipv4.ip_forward)" = 1 ] || fail 'preset re-apply dropped persisted forwarding'
+
+# The kernel default for reserved ports is empty; backups with it must still restore.
+fixture empty_reserved_ports
+mkdir -p "$(dirname "$(bbr_sysctl_path net.ipv4.ip_local_reserved_ports)")"
+printf '\n' > "$(bbr_sysctl_path net.ipv4.ip_local_reserved_ports)"
+bbr_backup_sysctl >/dev/null || fail 'backup with empty reserved ports'
+printf '40000\n' > "$(bbr_sysctl_path net.ipv4.ip_local_reserved_ports)"
+printf '1\nn\n' | bbr_restore_sysctl >/dev/null 2>&1 || fail 'backup with empty reserved ports could not be restored'
+[ -z "$(sysctl -n net.ipv4.ip_local_reserved_ports | tr -d '[:space:]')" ] || fail 'empty reserved ports were not restored'
+! grep -qE '^net.ipv4.ip_local_reserved_ports[[:space:]]*=[[:space:]]*$' "$SYSCTL_FILE" || fail 'persisted an empty sysctl value'
+
+# Old installs without a baseline must not have tuned values captured as the baseline later.
+fixture unknown_baseline
+mkdir -p "$(dirname "$(bbr_sysctl_path net.core.somaxconn)")"
+printf '8192\n' > "$(bbr_sysctl_path net.core.somaxconn)"
+printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\nnet.core.somaxconn = 8192\n' > "$SYSCTL_FILE"
+printf 'net.core.default_qdisc = fq_codel\n' > "$BBR_BASELINE_FILE"
+CONFIG=$(bbr_generate_config 8192 8192 balanced 0)
+printf 'n\n' | bbr_apply_sysctl "$CONFIG" ask '' '' '' "$(cat "$SYSCTL_FILE")" >/dev/null 2>&1 || fail 'apply dropping old key failed'
+bbr_tcp_set TFO on >/dev/null 2>&1 || fail 'unrelated TFO toggle failed'
+! bbr_baseline_value net.core.somaxconn >/dev/null 2>&1 || fail 'tuned value was captured as the first baseline'
+
+# fs.file-max set by an old install without a baseline stays persisted.
+fixture file_max_without_baseline
+mkdir -p "$(dirname "$(bbr_sysctl_path fs.file-max)")"
+printf '1048576\n' > "$(bbr_sysctl_path fs.file-max)"
+printf 'net.core.default_qdisc = fq\nfs.file-max = 1048576\n' > "$SYSCTL_FILE"
+printf 'net.core.default_qdisc = fq_codel\n' > "$BBR_BASELINE_FILE"
+bbr_file_max_needed || fail 'fs.file-max without baseline was judged unnecessary'
+
+# A signal during the rollback must not leave a half-restored runtime.
+fixture rollback_signal
+CONFIG=$(bbr_generate_config 8192 8192 balanced 0)
+(
+    sysctl() {
+        local KEY="${2%%=*}" VALUE="${2#*=}" PATHNAME ME="$BASHPID" TX
+        PATHNAME=$(bbr_sysctl_path "$KEY")
+        [ -f "$PATHNAME" ] || return 1
+        case "$1" in
+            -n) cat "$PATHNAME" ;;
+            -w)
+                printf '%s\n' "$VALUE" > "$PATHNAME"
+                # sysctl -w runs inside $(...): signal the transaction subshell, its parent.
+                TX=$(awk '{print $4}' "/proc/$ME/stat" 2>/dev/null || ps -o ppid= -p "$ME" | tr -d ' ')
+                case "$KEY" in
+                    net.ipv4.tcp_wmem) [ "$VALUE" = "4096 16384 4096" ] || kill -TERM "$TX" ;;
+                    net.core.rmem_max) [ "$VALUE" != 4096 ] || kill -TERM "$TX" ;;
+                esac ;;
+        esac
+    }
+    bbr_apply_sysctl "$CONFIG" preserve >/dev/null 2>&1
+) || true
+# rmem_max is restored first; keys after it show whether the rollback finished.
+[ "$(cat "$(bbr_sysctl_path net.core.wmem_max)")" = 4096 ] && [ "$(cat "$(bbr_sysctl_path net.ipv4.tcp_rmem)")" = "4096 131072 4096" ] \
+    || fail 'second signal interrupted the rollback'
+
+# Switching to fq under mq only touches the kernel default children, never ingress/clsact or foreign qdiscs.
+fixture mq_children
+(
+    TC_LOG="$TEST_CASE/tc.log"
+    printf 'fq\n' > "$(bbr_sysctl_path net.core.default_qdisc)"
+    default_iface() { echo eth0; }
+    bbr_tc_is_owned() { return 1; }
+    tc() {
+        case "$*" in
+            "qdisc show dev eth0") printf '%s\n' 'qdisc mq 0: root' \
+                'qdisc fq_codel 0: parent :1 limit 10240p flows 1024' \
+                'qdisc tbf 8005: parent :2 rate 50Mbit burst 32Kb lat 50ms' \
+                'qdisc clsact ffff: parent ffff:fff1' ;;
+            *) echo "$*" >> "$TC_LOG" ;;
+        esac
+    }
+    PATH="$TEST_CASE:$PATH"
+    printf '#!/bin/sh\n' > "$TEST_CASE/tc"; chmod +x "$TEST_CASE/tc"
+    printf 'y\n' | bbr_refresh_root_qdisc >/dev/null 2>&1
+    [ "$(cat "$TC_LOG")" = 'qdisc replace dev eth0 parent :1 fq' ] || fail "mq refresh touched non-default children: $(cat "$TC_LOG")"
+)
+
 echo 'BBR enhancement and transaction tests passed.'
