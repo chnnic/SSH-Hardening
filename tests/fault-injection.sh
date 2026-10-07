@@ -1199,4 +1199,92 @@ self_reconcile_tc_after_update >/dev/null \
         && ! grep -q '= 60' "$SWAP_SYSCTL_CONF" || { echo "sysctl.conf kept a conflicting swappiness line" >&2; exit 1; }
 )
 
+# Fail2ban whitelists loopback and the current SSH client, keeping existing ignoreip entries.
+(
+    F2B_JAIL_LOCAL="$TMP/f2b-ignore/jail.local"
+    mkdir -p "$TMP/f2b-ignore"
+    printf '[DEFAULT]\nignoreip = 10.0.0.0/8 127.0.0.1/8\n' > "$F2B_JAIL_LOCAL"
+    SSH_CONNECTION='203.0.113.9 50000 192.0.2.1 22'
+    [ "$(f2b_ignoreip_value)" = '127.0.0.1/8 ::1 10.0.0.0/8 203.0.113.9' ] \
+        || { echo "Fail2ban ignoreip misses the SSH client: $(f2b_ignoreip_value)" >&2; exit 1; }
+)
+! grep -q 'fail2ban-server -xf start &' "$ROOT/SSH-Hardening.sh" || { echo "Fail2ban install still starts an unmanaged server" >&2; exit 1; }
+
+# A distro-installed Fail2ban without jail.local still follows the new SSH port.
+(
+    F2B_JAIL_LOCAL="$TMP/f2b-missing/jail.local"
+    mkdir -p "$TMP/f2b-missing"
+    info() { :; }; warn() { :; }; error() { :; }
+    fail2ban-client() { return 0; }
+    f2b_status() { echo stopped; }
+    f2b_sync_ssh_port 22 2222 || { echo "Port sync failed without jail.local" >&2; exit 1; }
+    [ "$(f2b_section_value sshd port)" = 2222 ] || { echo "Fail2ban kept watching port 22 after an SSH port change" >&2; exit 1; }
+)
+
+# ufw blocks go to the top of the rule list; firewall helpers open every SSH port.
+(
+    LOG="$TMP/ufw-calls"
+    : > "$LOG"
+    print_header() { :; }; info() { :; }; warn() { :; }; error() { :; }; audit_action() { :; }
+    ufw() { echo "$*" >> "$LOG"; }
+    ufw_block_ip <<< '198.51.100.7' >/dev/null
+    grep -qx 'prepend deny from 198.51.100.7 to any' "$LOG" || { echo "ufw deny was appended after allow rules: $(cat "$LOG")" >&2; exit 1; }
+    : > "$LOG"
+    sshd_effective_ports() { printf '22\n2222\n'; }
+    SSH_CONNECTION='203.0.113.9 50000 192.0.2.1 52222'
+    fw_allow_ssh_ports ufw || { echo "SSH port allow failed" >&2; exit 1; }
+    ssh_protected_ports() { :; }
+    if fw_allow_ssh_ports ufw 2>/dev/null; then echo "Empty SSH port list counted as allowed" >&2; exit 1; fi
+    unset -f ssh_protected_ports
+    eval "$(sed -n '/^ssh_protected_ports() {/,/^}/p' "$ROOT/src/lib/core.sh")"
+    [ "$(LC_ALL=C sort "$LOG" | paste -sd, -)" = 'allow 22/tcp,allow 2222/tcp,allow 52222/tcp' ] \
+        || { echo "Firewall did not open every SSH port: $(paste -sd, "$LOG")" >&2; exit 1; }
+)
+
+# NFT: only this tool's DNAT is masqueraded, access control only drops new connections, listen IPs are validated.
+(
+    error() { :; }
+    NFT_STATE_DIR="$TMP/nft-render"; NFT_RULES_FILE="$NFT_STATE_DIR/rules.db"; NFT_ACCESS_FILE="$NFT_STATE_DIR/access.conf"
+    mkdir -p "$NFT_STATE_DIR"
+    printf '1|ipv4||10080|10080|ip|192.0.2.10|192.0.2.10|80|80|single\n' > "$NFT_RULES_FILE"
+    printf 'mode=whitelist\nentry=ipv4|203.0.113.0/24\n' > "$NFT_ACCESS_FILE"
+    OUT=$(nft_generate_config)
+    grep -q "th dport 10080 ct mark set ct mark or $NFT_DNAT_MARK dnat to 192.0.2.10:80" <<< "$OUT" \
+        || { echo "DNAT rule does not mark its connections" >&2; exit 1; }
+    ! grep -qE 'ct status dnat masquerade$' <<< "$OUT" && grep -q "ct mark and $NFT_DNAT_MARK == $NFT_DNAT_MARK masquerade" <<< "$OUT" \
+        || { echo "Postrouting masquerades every DNAT connection (Docker loses client IPs)" >&2; exit 1; }
+    grep -q 'th dport 10080 ct state new ip saddr != @sources drop' <<< "$OUT" || { echo "Whitelist also drops reply traffic" >&2; exit 1; }
+    for BAD in 10.0.0.256 host.example.com ::ffff:192.0.2.1; do
+        if nft_validate_listen_ip "$BAD"; then echo "Invalid listen IP accepted: $BAD" >&2; exit 1; fi
+    done
+    nft_validate_listen_ip 192.0.2.5 && nft_validate_listen_ip 2001:db8::5 && nft_validate_listen_ip '' \
+        || { echo "Valid listen IP rejected" >&2; exit 1; }
+    getent() { printf '::ffff:192.0.2.1 STREAM v4only.example\n'; }
+    if nft_resolve_domain v4only.example ipv6 >/dev/null; then echo "IPv4-mapped address used as IPv6 target" >&2; exit 1; fi
+)
+
+# gai.conf: single-space rules count, failed writes roll back, IPv6 egress is not reported as success.
+(
+    printf 'precedence ::ffff:0:0/96 100\n' > "$TMP/gai-single.conf"
+    ip_gai_prefers_v4 "$TMP/gai-single.conf" || { echo "Single-space IPv4 precedence shown as IPv6 default" >&2; exit 1; }
+    CALLS="$TMP/gai-calls"
+    : > "$CALLS"
+    print_header() { :; }; error() { :; }; warn() { echo "warn $*" >> "$CALLS"; }; info() { echo "info $*" >> "$CALLS"; }
+    confirm_change_preview() { return 0; }; safety_arm() { :; }; safety_confirm() { :; }
+    safety_rollback_now() { echo rollback-now >> "$CALLS"; }
+    audit_action() { echo "audit $2" >> "$CALLS"; }
+    ip_gai_supported() { return 0; }
+    IP_GAI_CONF="$TMP/missing-dir/gai.conf"
+    if ip_prefer_v4 >/dev/null 2>&1; then echo "IPv4 preference reported success after a failed write" >&2; exit 1; fi
+    grep -qx rollback-now "$CALLS" && ! grep -qx 'audit SUCCESS' "$CALLS" \
+        || { echo "Failed gai.conf write was not rolled back" >&2; exit 1; }
+    : > "$CALLS"
+    IP_GAI_CONF="$TMP/gai.conf"
+    curl() { echo 2001:db8::123; }
+    ip_prefer_v4 >/dev/null 2>&1 || { echo "IPv4 preference failed" >&2; exit 1; }
+    ip_gai_prefers_v4 "$IP_GAI_CONF" || { echo "IPv4 preference rule not written" >&2; exit 1; }
+    ! grep -q 'IPv4 优先已生效' "$CALLS" && grep -q '出口仍是 IPv6' "$CALLS" \
+        || { echo "IPv6 egress was reported as IPv4 preference success" >&2; exit 1; }
+)
+
 echo "Fault injection tests passed."

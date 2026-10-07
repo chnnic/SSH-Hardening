@@ -2,6 +2,18 @@
 #  IPv4/IPv6 配置模块
 # ══════════════════════════════════════════════════════════
 
+IP_GAI_CONF="${IP_GAI_CONF:-/etc/gai.conf}"
+
+# 空格数量不限：手写的单空格 precedence 行也是有效的 IPv4 优先规则。
+ip_gai_prefers_v4() {
+    grep -qE '^[[:space:]]*precedence[[:space:]]+::ffff:0:0/96[[:space:]]+100([[:space:]]|$)' "${1:-$IP_GAI_CONF}" 2>/dev/null
+}
+
+# musl（Alpine / OpenWrt）的 getaddrinfo 不读 gai.conf。
+ip_gai_supported() {
+    ! { ls /lib/ld-musl-* >/dev/null 2>&1 || ldd --version 2>&1 | grep -qi musl; }
+}
+
 ip_show_status() {
     print_header "IPv4 / IPv6 状态"
 
@@ -39,8 +51,7 @@ ip_show_status() {
     # ── 优先级状态 ─────────────────────────────────────────
     echo ""
     echo -e "  ${BOLD}优先级策略：${NC}"
-    local GAICONF="/etc/gai.conf"
-    if grep -q "^precedence ::ffff:0:0/96  100" "$GAICONF" 2>/dev/null; then
+    if ip_gai_prefers_v4; then
         echo -e "    ${CYAN}▸ 当前优先：IPv4${NC}"
     else
         echo -e "    ${CYAN}▸ 当前优先：IPv6（系统默认）${NC}"
@@ -59,18 +70,28 @@ ip_show_status() {
 
 ip_prefer_v4() {
     print_header "设置 IPv4 优先"
-    local GAICONF="/etc/gai.conf"
+    local GAICONF="$IP_GAI_CONF" TMP
+    if ! ip_gai_supported; then
+        warn "当前系统使用 musl libc，不读取 gai.conf，无法通过该方式设置 IPv4 优先。"
+        return 1
+    fi
     confirm_change_preview "IPv4 优先" "写入 gai.conf 地址优先级规则" "不关闭 IPv6" || { warn "已取消"; return; }
     safety_arm prefer_v4 || return 1
 
     # 备份
-    cp "$GAICONF" "${GAICONF}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null
+    [ ! -f "$GAICONF" ] || cp "$GAICONF" "${GAICONF}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null
 
-    # 注释掉已有的 precedence ::ffff 行，再追加正确的
-    sed -i '/^precedence ::ffff:0:0\/96/d' "$GAICONF" 2>/dev/null
-    # 确保文件存在
-    [ -f "$GAICONF" ] || touch "$GAICONF"
-    echo "precedence ::ffff:0:0/96  100" >> "$GAICONF"
+    # 去掉已有的 precedence ::ffff 行，再追加正确的；写临时文件后原子替换，失败就立即回滚。
+    if ! TMP=$(mktemp "${GAICONF}.tmp.XXXXXX" 2>/dev/null) \
+        || ! { [ ! -f "$GAICONF" ] || awk '!/^[[:space:]]*precedence[[:space:]]+::ffff:0:0\/96([[:space:]]|$)/' "$GAICONF"; } > "$TMP" \
+        || ! printf 'precedence ::ffff:0:0/96  100\n' >> "$TMP" \
+        || ! chmod 644 "$TMP" || ! mv "$TMP" "$GAICONF" || ! ip_gai_prefers_v4 "$GAICONF"; then
+        rm -f "$TMP"
+        error "无法写入 $GAICONF，已撤销本次修改"
+        audit_action "设置IPv4优先" FAILED
+        safety_rollback_now
+        return 1
+    fi
 
     info "已写入 IPv4 优先规则到 $GAICONF ✓"
 
@@ -78,19 +99,25 @@ ip_prefer_v4() {
     sysctl -w net.ipv4.conf.all.promote_secondaries=1 &>/dev/null
 
     echo ""
-    warn "IPv4 优先已生效，部分程序需重启才能感知变化"
-    echo ""
     echo -e "  验证（应显示 IPv4 连接）："
     echo -e "  ${DIM}curl -s --max-time 5 ip.sb${NC}"
     local RESULT; RESULT=$(curl -s --max-time 5 ip.sb 2>/dev/null)
-    [ -n "$RESULT" ] && echo -e "  当前出口 IP：${BOLD}${RESULT}${NC}" || warn "无法连接 ip.sb 进行验证"
-    audit_action "设置IPv4优先" SUCCESS
+    case "$RESULT" in
+        "") warn "无法连接 ip.sb 进行验证；规则已写入，部分程序需重启才能感知变化" ;;
+        *:*)
+            echo -e "  当前出口 IP：${BOLD}${RESULT}${NC}"
+            warn "出口仍是 IPv6：规则已写入，但本机可能没有可用的 IPv4 出口，或该程序不使用 getaddrinfo" ;;
+        *)
+            echo -e "  当前出口 IP：${BOLD}${RESULT}${NC}"
+            info "IPv4 优先已生效，部分程序需重启才能感知变化" ;;
+    esac
+    audit_action "设置IPv4优先（写入 gai.conf）" SUCCESS
     safety_confirm
 }
 
 ip_prefer_v6() {
     print_header "设置 IPv6 优先"
-    local GAICONF="/etc/gai.conf"
+    local GAICONF="$IP_GAI_CONF"
     confirm_change_preview "IPv6 优先" "移除脚本写入的 IPv4 优先规则" "恢复系统默认地址选择策略" || { warn "已取消"; return; }
     safety_arm prefer_v6 || return 1
 
@@ -98,7 +125,16 @@ ip_prefer_v6() {
     [ -f "$GAICONF" ] || touch "$GAICONF"
 
     # 移除本脚本写入的 IPv4 优先规则，恢复 glibc 默认地址选择策略（IPv6 优先）。
-    sed -i '/^precedence ::ffff:0:0\/96[[:space:]]\+100/d' "$GAICONF" 2>/dev/null
+    local TMP
+    if ! TMP=$(mktemp "${GAICONF}.tmp.XXXXXX" 2>/dev/null) \
+        || ! awk '!/^[[:space:]]*precedence[[:space:]]+::ffff:0:0\/96[[:space:]]+100([[:space:]]|$)/' "$GAICONF" > "$TMP" \
+        || ! chmod 644 "$TMP" || ! mv "$TMP" "$GAICONF"; then
+        rm -f "$TMP"
+        error "无法更新 $GAICONF，已撤销本次修改"
+        audit_action "设置IPv6优先" FAILED
+        safety_rollback_now
+        return 1
+    fi
 
     info "已移除 IPv4 优先规则，恢复 IPv6 优先（系统默认）✓"
     echo ""
@@ -411,7 +447,7 @@ ip_config_menu() {
         local V6_DISABLED; V6_DISABLED=$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)
         local V6_STATUS; [ "$V6_DISABLED" = "1" ] && V6_STATUS="${RED}${BOLD}已禁用${NC}" || V6_STATUS="${GREEN}${BOLD}已启用${NC}"
         local V4_PREF="系统默认（IPv6优先）"
-        grep -q "^precedence ::ffff:0:0/96  100" /etc/gai.conf 2>/dev/null && V4_PREF="${CYAN}${BOLD}IPv4 优先${NC}"
+        ip_gai_prefers_v4 && V4_PREF="${CYAN}${BOLD}IPv4 优先${NC}"
 
         echo -e "  IPv6 状态：$V6_STATUS"
         echo -e "  优先级：$V4_PREF"

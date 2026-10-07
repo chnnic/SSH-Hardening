@@ -1,13 +1,20 @@
 # ══════════════════════════════════════════════════════════
 #  NFT 转发管理模块（端口转发 / DDNS / 访问控制）
 # ══════════════════════════════════════════════════════════
+# RHEL 系的 nftables.service 加载的是 /etc/sysconfig/nftables.conf，写到 /etc/nftables.conf 重启后会丢规则。
+if [ -z "${NFT_CONFIG_FILE:-}" ] && [ -f /etc/sysconfig/nftables.conf ]; then
+    NFT_CONFIG_FILE=/etc/sysconfig/nftables.conf
+fi
 NFT_CONFIG_FILE="${NFT_CONFIG_FILE:-/etc/nftables.conf}"
 NFT_MANAGED_FILE="${NFT_MANAGED_FILE:-/etc/nftables.d/vps-tools-nftpf.nft}"
 NFT_INCLUDE_MARKER="# VPS_TOOLS_NFTPF_INCLUDE"
 NFT_STATE_DIR="${NFT_STATE_DIR:-/etc/nft-port-forward}"
 NFT_RULES_FILE="${NFT_RULES_FILE:-$NFT_STATE_DIR/rules.db}"
 NFT_ACCESS_FILE="${NFT_ACCESS_FILE:-$NFT_STATE_DIR/access.conf}"
-NFT_RENDER_VERSION="1"
+NFT_RENDER_VERSION="2"
+# 本工具 DNAT 的连接打上这一位 ct mark，postrouting 只伪装带标记的连接，
+# 不影响 Docker 等其它 DNAT（否则容器看不到真实客户端 IP）。
+NFT_DNAT_MARK="0x00080000"
 NFT_TRACK_TIMEOUT="${NFT_TRACK_TIMEOUT:-30m}"
 NFT_DDNS_TIMER_FILE="/etc/systemd/system/nftpf-ddns.timer"
 NFT_DDNS_SERVICE_FILE="/etc/systemd/system/nftpf-ddns.service"
@@ -225,6 +232,17 @@ nft_is_hostname() {
     echo "$1" | grep -qE '^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$'
 }
 
+# 监听地址只能是本机 IP；写错或填域名时规则永远不会渲染，却会提示“已应用”。
+nft_validate_listen_ip() {
+    [ -n "$1" ] || return 0
+    case "$(nft_classify "$1")" in
+        ipv4) return 0 ;;
+        ipv6) case "$1" in ::ffff:*|::FFFF:*) ;; *) return 0 ;; esac ;;
+    esac
+    error "监听 IP 无效：$1（只能填写本机 IPv4 / IPv6 地址，留空表示所有）"
+    return 1
+}
+
 nft_classify() {
     if nft_is_ipv4 "$1"; then echo "ipv4"
     elif nft_is_ipv6 "$1"; then echo "ipv6"
@@ -251,7 +269,8 @@ nft_resolve_domain() {
         result=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1; exit}')
         nft_is_ipv4 "$result" && echo "$result" && return 0
     else
-        result=$(getent ahostsv6 "$domain" 2>/dev/null | awk '{print $1; exit}')
+        # ahostsv6 带 AI_V4MAPPED：只有 A 记录的域名会返回 ::ffff:x.x.x.x，不能当成 IPv6 目标。
+        result=$(getent ahostsv6 "$domain" 2>/dev/null | awk 'tolower($1) !~ /^::ffff:/ {print $1; exit}')
         nft_is_ipv6 "$result" && echo "$result" && return 0
     fi
     return 1
@@ -340,16 +359,16 @@ nft_render_rule_line() {
     case "$mode" in
         single)
             dnat=$(nft_build_dnat "$family" "$tip" "$ts")
-            echo "        ${listen_match}meta l4proto {tcp, udp} th dport $port_expr dnat to $dnat"
+            echo "        ${listen_match}meta l4proto {tcp, udp} th dport $port_expr ct mark set ct mark or $NFT_DNAT_MARK dnat to $dnat"
             ;;
         range_1_to_1)
             dnat=$(nft_build_dnat "$family" "$tip" "")
-            echo "        ${listen_match}meta l4proto {tcp, udp} th dport $port_expr dnat to $dnat"
+            echo "        ${listen_match}meta l4proto {tcp, udp} th dport $port_expr ct mark set ct mark or $NFT_DNAT_MARK dnat to $dnat"
             ;;
         range_offset)
             dnat=$(nft_build_dnat "$family" "$tip" "")
             map_str=$(nft_build_port_map "$ls" "$le" "$ts")
-            echo "        ${listen_match}meta l4proto {tcp, udp} th dport $port_expr dnat to $dnat : th dport map $map_str"
+            echo "        ${listen_match}meta l4proto {tcp, udp} th dport $port_expr ct mark set ct mark or $NFT_DNAT_MARK dnat to $dnat : th dport map $map_str"
             ;;
     esac
 }
@@ -390,6 +409,7 @@ EOF
     fi
     echo "    chain prerouting {"
     echo "        type filter hook prerouting priority -101; policy accept;"
+    echo "        # 只拦新连接：回包的目的端口可能落在转发端口段内，不能被误丢"
     echo "        # NFTPF_ACCESS_MODE=$mode"
 
     # 为每条规则生成访问控制匹配
@@ -411,12 +431,12 @@ EOF
         fi
         if [ "$mode" = "whitelist" ]; then
             if [ -n "$entries" ]; then
-                echo "        $match $addr saddr != @sources drop"
+                echo "        $match ct state new $addr saddr != @sources drop"
             else
-                echo "        $match drop"
+                echo "        $match ct state new drop"
             fi
         else
-            echo "        $match $addr saddr @sources drop"
+            echo "        $match ct state new $addr saddr @sources drop"
         fi
     done < "$NFT_RULES_FILE"
     echo "    }"
@@ -443,7 +463,7 @@ EOF
     }
     chain postrouting {
         type nat hook postrouting priority srcnat; policy accept;
-        ct status dnat masquerade
+        ct status dnat ct mark and $NFT_DNAT_MARK == $NFT_DNAT_MARK masquerade
     }
 }
 
@@ -456,7 +476,7 @@ EOF
     }
     chain postrouting {
         type nat hook postrouting priority srcnat; policy accept;
-        ct status dnat masquerade
+        ct status dnat ct mark and $NFT_DNAT_MARK == $NFT_DNAT_MARK masquerade
     }
 }
 EOF
@@ -590,6 +610,7 @@ nft_add_rule() {
 
     read -rp "  监听 IP（留空=所有，IPv6 输入 ::）: " lip
     [ "$lip" = "0.0.0.0" ] || [ "$lip" = "::" ] && lip=""
+    nft_validate_listen_ip "$lip" || return
 
     if [ "$mode" = "single" ]; then
         read -rp "  监听端口: " ls
@@ -697,6 +718,7 @@ nft_edit_rule() {
     read -rp "  监听 IP [${lip_display}]: " new_lip
     [ -z "$new_lip" ] && new_lip="$OLD_LIP"
     [ "$new_lip" = "0.0.0.0" ] || [ "$new_lip" = "::" ] && new_lip=""
+    nft_validate_listen_ip "$new_lip" || return
 
     # ── 监听端口 ──
     local new_ls new_le

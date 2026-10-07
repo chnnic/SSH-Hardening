@@ -26,16 +26,18 @@ jobs:
 
       - name: Validate scripts
         run: |
-          for file in SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/release-version.sh tests/bbr-enhancements.sh tests/bbr-netns.sh tests/update-notice.sh tests/menu-ui.sh; do
+          for file in SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/release-version.sh tests/bbr-enhancements.sh tests/bbr-netns.sh tests/update-notice.sh tests/menu-ui.sh tests/nft-syntax.sh; do
             bash -n "$file"
           done
           ./build.sh --check
           tests/release-version.sh
-          shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/release-version.sh tests/bbr-enhancements.sh tests/bbr-netns.sh tests/update-notice.sh tests/menu-ui.sh
+          shellcheck --severity=warning -x SSH-Hardening.sh build-offline-package.sh tests/offline-package.sh tests/release-version.sh tests/bbr-enhancements.sh tests/bbr-netns.sh tests/update-notice.sh tests/menu-ui.sh tests/nft-syntax.sh
           sha256sum -c SSH-Hardening.sh.sha256
           tests/smoke.sh
           tests/fault-injection.sh
           sudo bash tests/bbr-netns.sh
+          command -v nft >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq nftables; }
+          sudo NFT_SYNTAX_REQUIRED=1 bash tests/nft-syntax.sh
           tests/offline-package.sh
 
       - name: Build release assets

@@ -59,6 +59,16 @@ f2b_status() {
     fi
 }
 
+# 白名单：本机回环 + 当前 SSH 客户端 IP + jail.local 已有的 ignoreip。
+# aggressive 模式会把多钥匙试探、取消认证也计为失败，不加白名单容易把运维者自己封掉。
+f2b_ignoreip_value() {
+    local CLIENT EXISTING
+    CLIENT=${SSH_CONNECTION%% *}
+    CLIENT=${CLIENT#::ffff:}
+    EXISTING=$(f2b_section_value DEFAULT ignoreip 2>/dev/null || true)
+    printf '%s\n' 127.0.0.1/8 ::1 $EXISTING "$CLIENT" | awk 'NF && !seen[$0]++' | paste -sd' ' -
+}
+
 # 安装 fail2ban
 f2b_install() {
     print_header "安装 Fail2ban"
@@ -104,8 +114,11 @@ f2b_install() {
 
     # ── 3. 写入 jail.local ───────────────────────────────────
     # 已存在则先备份再重写：旧逻辑「存在就跳过」会导致脚本更新的配置永不生效
+    local JAIL_BACKUP="" IGNOREIP
+    IGNOREIP=$(f2b_ignoreip_value)
     if [ -f /etc/fail2ban/jail.local ]; then
-        cp /etc/fail2ban/jail.local "/etc/fail2ban/jail.local.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null
+        JAIL_BACKUP="/etc/fail2ban/jail.local.bak.$(date +%Y%m%d_%H%M%S)"
+        cp /etc/fail2ban/jail.local "$JAIL_BACKUP" 2>/dev/null || JAIL_BACKUP=""
         info "已备份原有 jail.local"
     fi
 
@@ -119,6 +132,7 @@ f2b_install() {
     mkdir -p /etc/fail2ban
     {
         echo "[DEFAULT]"
+        echo "ignoreip = ${IGNOREIP}"
         echo "bantime  = 3600"
         echo "findtime = 600"
         echo "maxretry = 5"
@@ -135,12 +149,10 @@ f2b_install() {
         [ -n "$LOGPATH_LINE" ] && echo "$LOGPATH_LINE"
     } > /etc/fail2ban/jail.local
     info "已写入 jail.local（backend=${BACKEND}, mode=aggressive）✓"
+    info "白名单 ignoreip：${IGNOREIP}"
 
-    # ── 4. 清理残留，准备启动 ────────────────────────────────
-    # 清理旧 socket
-    rm -f /run/fail2ban/fail2ban.sock \
-          /var/run/fail2ban/fail2ban.sock 2>/dev/null || true
-
+    # ── 4. 准备启动 ──────────────────────────────────────────
+    # 不能删除运行中实例的 socket：删掉后 ping 永远失败，会误判未启动。
     # 清理可能残留的错误 override
     rm -f /etc/systemd/system/fail2ban.service.d/override.conf 2>/dev/null
     rmdir /etc/systemd/system/fail2ban.service.d/ 2>/dev/null || true
@@ -158,7 +170,8 @@ f2b_install() {
     TEST_OUT=$(fail2ban-server -t 2>&1)
     if echo "$TEST_OUT" | grep -qiE "^OK|test is successful"; then
         info "配置验证通过，正在启动..."
-        start_fail2ban
+        # 包管理器安装后可能已自动启动：运行中只能 restart，start 不会读取新配置。
+        if [ "$(f2b_status)" = running ]; then restart_fail2ban; else start_fail2ban; fi
         # 等待 socket 出现（最多 8 秒）
         local i=0
         while [ $i -lt 8 ]; do
@@ -168,26 +181,27 @@ f2b_install() {
         done
         if f2b_ping; then
             info "Fail2ban 安装并启动成功 ✓"
+            audit_action "安装 Fail2ban" SUCCESS
         else
-            # 最后尝试：直接前台启动后台化
-            warn "标准启动未响应，尝试备用方式..."
-            /usr/bin/fail2ban-server -xf start &>/dev/null &
-            sleep 3
-            if f2b_ping; then
-                info "Fail2ban 启动成功 ✓"
-            else
-                error "启动失败，请手动执行："
-                echo -e "  ${DIM}journalctl -u fail2ban -n 20${NC}"
-                echo -e "  ${DIM}fail2ban-server -xf --logtarget=sysout start${NC}"
-            fi
+            # 不再用 fail2ban-server -xf 另起一个不受服务管理器管理的实例。
+            error "启动失败，请检查："
+            echo -e "  ${DIM}journalctl -u fail2ban -n 20${NC}"
+            echo -e "  ${DIM}fail2ban-server -xf --logtarget=sysout start${NC}"
+            audit_action "安装 Fail2ban（启动失败）" FAILED
         fi
     else
         error "配置验证失败："
         echo "$TEST_OUT" | grep -v "^OK" | while IFS= read -r l; do
             echo -e "  ${RED}$l${NC}"
         done
-        echo ""
-        warn "请进入「基础参数配置」修复后再启动"
+        if [ -n "$JAIL_BACKUP" ] && cp "$JAIL_BACKUP" /etc/fail2ban/jail.local; then
+            warn "已恢复原有 jail.local，未启动新配置"
+        else
+            rm -f /etc/fail2ban/jail.local
+            warn "已移除无效的 jail.local，未启动新配置"
+        fi
+        audit_action "安装 Fail2ban（配置验证失败）" FAILED
+        return 1
     fi
 }
 
@@ -312,7 +326,8 @@ f2b_section_value() {
 # SSH 改端口后同步 [sshd] port。只替换仍指向旧端口的值，用户自定义的多端口不动。
 f2b_sync_ssh_port() {
     local OLD="$1" NEW="$2" CUR JAIL_LOCAL="${F2B_JAIL_LOCAL:-/etc/fail2ban/jail.local}"
-    [ -f "$JAIL_LOCAL" ] || return 0
+    # 用户自己用包管理器装的 fail2ban 没有 jail.local，默认只盯 22：此时也要写入新端口。
+    [ -f "$JAIL_LOCAL" ] || command -v fail2ban-client >/dev/null 2>&1 || return 0
     CUR=$(f2b_section_value sshd port)
     case "$CUR" in
         ""|ssh|"$OLD") ;;
@@ -425,11 +440,28 @@ JAILEOF
             warn "编辑完成后保存退出（vi: :wq  nano: Ctrl+O/X）"
             echo ""
             ui_continue
+            local EDIT_BACKUP
+            EDIT_BACKUP=$(mktemp) && cp "$JAIL_LOCAL" "$EDIT_BACKUP" || { error "无法备份 $JAIL_LOCAL"; rm -f "$EDIT_BACKUP"; return 1; }
             open_editor "$JAIL_LOCAL"
             echo ""
+            local TEST_OUT
+            if command -v fail2ban-client >/dev/null 2>&1 && ! TEST_OUT=$(fail2ban-client -t 2>&1); then
+                error "配置验证失败，未重启 Fail2ban："
+                printf '%s\n' "$TEST_OUT" | tail -5 | while IFS= read -r l; do echo -e "  ${RED}$l${NC}"; done
+                read -rp "  恢复编辑前的配置？(Y/n，默认Y): " RESTORE
+                [ -z "$RESTORE" ] && RESTORE="y"
+                if echo "$RESTORE" | grep -qiE '^y(es)?$'; then
+                    cp "$EDIT_BACKUP" "$JAIL_LOCAL" && info "已恢复编辑前的 jail.local"
+                fi
+                rm -f "$EDIT_BACKUP"
+                return 1
+            fi
+            rm -f "$EDIT_BACKUP"
             read -rp "  是否重启 Fail2ban 使配置生效？(Y/n，默认Y): " RESTART
             [ -z "$RESTART" ] && RESTART="y"
-            echo "$RESTART" | grep -qiE '^y(es)?$' && restart_fail2ban && info "Fail2ban 已重启 ✓" || true
+            if echo "$RESTART" | grep -qiE '^y(es)?$'; then
+                if restart_fail2ban; then info "Fail2ban 已重启 ✓"; else error "Fail2ban 重启失败，请检查：journalctl -u fail2ban -n 20"; fi
+            fi
             ;;
         2)
             if [ -f "$JAIL_CONF" ]; then

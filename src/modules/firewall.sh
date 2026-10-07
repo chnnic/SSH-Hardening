@@ -18,30 +18,44 @@ fw_detect() {
 fw_running() {
     local TYPE="$1"
     case "$TYPE" in
-        ufw)      ufw status 2>/dev/null | grep -q "Status: active" && echo "active" || echo "inactive" ;;
+        ufw)      LC_ALL=C ufw status 2>/dev/null | grep -q "Status: active" && echo "active" || echo "inactive" ;;
         firewalld) svc_is_active firewalld && echo "active" || echo "inactive" ;;
         *) echo "none" ;;
     esac
 }
 
 # ── 放行常用端口（安装防火墙后调用）────────────────────────
+# 放行 SSH 的全部端口（sshd 配置里的每个 Port + 当前会话所连端口）。
+fw_allow_ssh_ports() {
+    local TYPE="$1" P PORTS
+    PORTS=$(ssh_protected_ports)
+    # 一个端口都没取到时绝不能当作“已放行”，否则会在没有 SSH 规则的情况下启用防火墙。
+    [ -n "$PORTS" ] || { error "无法确定 SSH 端口，已停止"; return 1; }
+    for P in $PORTS; do
+        case "$TYPE" in
+            ufw) ufw allow "${P}"/tcp >/dev/null 2>&1 || { error "无法放行 SSH ${P}/tcp"; return 1; } ;;
+            firewalld) firewall-cmd --permanent --add-port="${P}/tcp" >/dev/null 2>&1 || { error "无法放行 SSH ${P}/tcp"; return 1; } ;;
+        esac
+    done
+}
+
 fw_allow_common_ports() {
     local TYPE="$1"
-    local SSH_PORT; SSH_PORT=$(get_config "Port"); SSH_PORT="${SSH_PORT:-22}"
-    info "放行常用端口：SSH ${SSH_PORT} / HTTP 80 / HTTPS 443 ..."
+    local SSH_PORTS; SSH_PORTS=$(ssh_protected_ports | paste -sd' ' -)
+    info "放行常用端口：SSH ${SSH_PORTS} / HTTP 80 / HTTPS 443 ..."
     case "$TYPE" in
         ufw)
-            ufw allow "${SSH_PORT}"/tcp 2>/dev/null || { error "无法放行 SSH ${SSH_PORT}/tcp"; return 1; }
+            fw_allow_ssh_ports ufw || return 1
             ufw allow 80/tcp 2>/dev/null || { error "无法放行 HTTP 80/tcp"; return 1; }
             ufw allow 443/tcp 2>/dev/null || { error "无法放行 HTTPS 443/tcp"; return 1; }
-            info "SSH ${SSH_PORT} / HTTP 80 / HTTPS 443 已放行 ✓"
+            info "SSH ${SSH_PORTS} / HTTP 80 / HTTPS 443 已放行 ✓"
             ;;
         firewalld)
-            firewall-cmd --permanent --add-port="${SSH_PORT}/tcp" 2>/dev/null || return 1
+            fw_allow_ssh_ports firewalld || return 1
             firewall-cmd --permanent --add-port="80/tcp" 2>/dev/null || return 1
             firewall-cmd --permanent --add-port="443/tcp" 2>/dev/null || return 1
             firewall-cmd --reload 2>/dev/null || return 1
-            info "firewalld 已放行 SSH ${SSH_PORT} / 80 / 443 ✓"
+            info "firewalld 已放行 SSH ${SSH_PORTS} / 80 / 443 ✓"
             ;;
     esac
 }
@@ -70,8 +84,10 @@ fw_install() {
             fi
             ;;
         firewalld)
+            # Debian/Ubuntu 安装时会自动启动 firewalld：必须先布防，快照才记录“未运行”，回滚能把它停掉。
+            safety_arm firewall_install || return 1
             if pkg_install firewalld; then
-                safety_arm firewall_install || return 1
+                fw_allow_ssh_ports firewalld >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1 || true
                 svc_enable firewalld
                 svc_start firewalld || { error "firewalld 启动失败"; return 1; }
                 [ "$(fw_running firewalld)" = active ] || { error "firewalld 未进入运行状态"; return 1; }
@@ -79,6 +95,7 @@ fw_install() {
                 fw_allow_common_ports "firewalld" || { error "基础端口放行失败"; return 1; }
                 safety_confirm
             else
+                safety_rollback_now
                 error "安装失败，请检查网络或手动安装"
                 return 1
             fi
@@ -144,7 +161,17 @@ ufw_block_ip() {
     print_header "拉黑 IP — ufw"
     read -rp "  请输入要拉黑的 IP 或 CIDR（如 1.2.3.4 或 1.2.3.0/24）: " IP
     [ -z "$IP" ] && { warn "已取消"; return; }
-    ufw deny from "$IP" to any 2>/dev/null && info "已拉黑 $IP ✓" || error "操作失败"
+    # ufw 按顺序匹配：追加在末尾的 deny 挡不住前面已放行的 22/80/443，必须插到最前。
+    if ufw prepend deny from "$IP" to any >/dev/null 2>&1 \
+        || ufw insert 1 deny from "$IP" to any >/dev/null 2>&1; then
+        info "已拉黑 $IP ✓（规则位于最前，优先于放行规则）"
+        audit_action "ufw 拉黑 $IP" SUCCESS
+    elif ufw deny from "$IP" to any >/dev/null 2>&1; then
+        warn "已添加拉黑规则，但当前 ufw 不支持插入到最前，已放行的端口可能仍对 $IP 开放"
+        audit_action "ufw 拉黑 $IP（追加在末尾）" SUCCESS
+    else
+        error "操作失败"
+    fi
 }
 
 ufw_allow_ip() {
@@ -174,16 +201,16 @@ ufw_del_ip() {
 
 ufw_quick_allow() {
     print_header "一键放行常用端口 — ufw"
-    local SSH_PORT; SSH_PORT=$(get_config "Port"); SSH_PORT="${SSH_PORT:-22}"
+    local SSH_PORTS; SSH_PORTS=$(ssh_protected_ports | paste -sd' ' -)
     echo -e "  将放行以下端口："
-    echo -e "  ${GREEN}SSH${NC}   : $SSH_PORT"
+    echo -e "  ${GREEN}SSH${NC}   : $SSH_PORTS"
     echo -e "  ${GREEN}HTTP${NC}  : 80"
     echo -e "  ${GREEN}HTTPS${NC} : 443"
     echo ""
     read -rp "  确认放行？(Y/n，默认Y): " CONFIRM
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
-    ufw allow "$SSH_PORT"/tcp  && info "SSH $SSH_PORT 已放行 ✓"
+    fw_allow_ssh_ports ufw && info "SSH $SSH_PORTS 已放行 ✓"
     ufw allow 80/tcp           && info "HTTP 80 已放行 ✓"
     ufw allow 443/tcp          && info "HTTPS 443 已放行 ✓"
 }
@@ -228,7 +255,14 @@ ufw_menu() {
                 if [ "$STATUS" = "active" ]; then
                     ufw --force disable && info "防火墙已关闭 ✓"
                 else
-                    ufw --force enable  && info "防火墙已开启 ✓"
+                    # 先放行全部 SSH 端口再启用，不能只靠 180 秒回滚兜底。
+                    if ! fw_allow_ssh_ports ufw; then
+                        error "SSH 端口放行失败，未启用防火墙"
+                    elif ufw --force enable >/dev/null 2>&1 && [ "$(fw_running ufw)" = active ]; then
+                        info "防火墙已开启 ✓（已放行 SSH $(ssh_protected_ports | paste -sd' ' -)）"
+                    else
+                        error "防火墙开启失败"
+                    fi
                 fi
                 audit_action "切换ufw状态" SUCCESS
                 ;;
@@ -369,16 +403,16 @@ fwd_del_ip() {
 
 fwd_quick_allow() {
     print_header "一键放行常用端口 — firewalld"
-    local SSH_PORT; SSH_PORT=$(get_config "Port"); SSH_PORT="${SSH_PORT:-22}"
+    local SSH_PORTS; SSH_PORTS=$(ssh_protected_ports | paste -sd' ' -)
     echo -e "  将放行以下端口："
-    echo -e "  ${GREEN}SSH${NC}   : $SSH_PORT/tcp"
+    echo -e "  ${GREEN}SSH${NC}   : $SSH_PORTS/tcp"
     echo -e "  ${GREEN}HTTP${NC}  : 80/tcp"
     echo -e "  ${GREEN}HTTPS${NC} : 443/tcp"
     echo ""
     read -rp "  确认放行？(Y/n，默认Y): " CONFIRM
     [ -z "${CONFIRM}" ] && CONFIRM="y"
     if ! echo "${CONFIRM}" | grep -qiE '^y(es)?$'; then warn "已取消"; return; fi
-    firewall-cmd --permanent --add-port="${SSH_PORT}/tcp"  && info "SSH $SSH_PORT 已放行 ✓"
+    fw_allow_ssh_ports firewalld && info "SSH $SSH_PORTS 已放行 ✓"
     firewall-cmd --permanent --add-port="80/tcp"           && info "HTTP 80 已放行 ✓"
     firewall-cmd --permanent --add-port="443/tcp"          && info "HTTPS 443 已放行 ✓"
     firewall-cmd --reload && info "规则已重载 ✓"
