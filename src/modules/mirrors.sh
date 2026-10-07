@@ -43,8 +43,29 @@ mirror_disable_deb822_default() {
     info "已禁用 deb822 默认源：${NAME}.sources"
 }
 
+# Ubuntu 的 /ubuntu 路径只有 amd64/i386；arm64 等架构在 ubuntu-ports。
+mirror_ubuntu_arch_url() {
+    local MIRROR="$1" ARCH
+    ARCH=$(dpkg --print-architecture 2>/dev/null || true)
+    case "$ARCH" in
+        ''|amd64|i386) printf '%s\n' "$MIRROR" ;;
+        *)
+            case "$MIRROR" in
+                *://archive.ubuntu.com/ubuntu) printf '%s\n' "http://ports.ubuntu.com/ubuntu-ports" ;;
+                */ubuntu) printf '%s\n' "${MIRROR}-ports" ;;
+                *) printf '%s\n' "$MIRROR" ;;
+            esac ;;
+    esac
+}
+
+# apt 对缺少当前架构的源只给 Notice，update 仍返回 0；必须确认基础包确实有候选版本。
+mirror_apt_index_usable() {
+    LC_ALL=C apt-cache policy coreutils 2>/dev/null | grep -qE '^[[:space:]]*Candidate:[[:space:]]+[^([:space:]]'
+}
+
 mirror_apply_ubuntu() {
-    local MIRROR="$1"
+    local MIRROR
+    MIRROR=$(mirror_ubuntu_arch_url "$1")
     local CODENAME; CODENAME=$(get_codename)
     mirror_apt_backup || { error "软件源备份失败"; return 1; }
     mkdir -p /etc/apt/sources.list.d
@@ -57,7 +78,7 @@ deb ${MIRROR} ${CODENAME}-security main restricted universe multiverse
 EOF
     then mirror_apt_restore; error "写入 Ubuntu 源失败"; return 1; fi
     info "已切换 Ubuntu 源 → $MIRROR"
-    if apt-get update -qq 2>/dev/null; then
+    if apt-get update -qq 2>/dev/null && mirror_apt_index_usable; then
         info "apt update 完成 ✓"
     else
         mirror_apt_restore
@@ -81,7 +102,7 @@ deb ${MIRROR}-security ${CODENAME}-security main contrib non-free non-free-firmw
 EOF
     then mirror_apt_restore; error "写入 Debian 源失败"; return 1; fi
     info "已切换 Debian 源 → $MIRROR"
-    if apt-get update -qq 2>/dev/null; then
+    if apt-get update -qq 2>/dev/null && mirror_apt_index_usable; then
         info "apt update 完成 ✓"
     else
         mirror_apt_restore

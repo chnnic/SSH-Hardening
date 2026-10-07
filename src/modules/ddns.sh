@@ -587,12 +587,28 @@ ddns_remove_cron_job() {
     fi
 }
 
+# 凭据经 curl -K - 从标准输入传入：放在命令行参数里会被本机任意用户从 ps / /proc/*/cmdline 读到。
+ddns_curl_config_quote() {
+    printf '%s' "$1" | sed 's/[\\"]/\\&/g'
+}
+
+ddns_cf_curl() {
+    local TOKEN="$1"
+    shift
+    curl -K - "$@" <<< "header = \"Authorization: Bearer $(ddns_curl_config_quote "$TOKEN")\""
+}
+
+ddns_tg_curl() {
+    local BOT="$1" METHOD="$2"
+    shift 2
+    curl -K - "$@" <<< "url = \"https://api.telegram.org/bot$(ddns_curl_config_quote "$BOT")/${METHOD}\""
+}
+
 ddns_cf_record_ensure() {
     local zone_id="$1" token="$2" type="$3" domain="$4" placeholder="$5" ttl="$6" proxied="$7"
     local record_resp exact_records record_count create_body create_resp create_ok
-    record_resp=$(curl -s --max-time 10 \
-        "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?name=${domain}&type=${type}" \
-        -H "Authorization: Bearer ${token}")
+    record_resp=$(ddns_cf_curl "${token}" -s --max-time 10 \
+        "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?name=${domain}&type=${type}")
     if ! exact_records=$(printf '%s' "$record_resp" | ddns_cf_exact_records "$type" "$domain"); then
         error "查询 ${type} 记录失败，请检查网络和 Token 权限"
         return 1
@@ -607,9 +623,8 @@ ddns_cf_record_ensure() {
         warn "未找到 ${type} 记录 ${domain}，正在自动创建..."
         create_body=$(printf '{"type":"%s","name":"%s","content":"%s","ttl":%s,"proxied":%s}' \
             "$type" "$domain" "$placeholder" "$ttl" "$proxied")
-        create_resp=$(curl -s -X POST --max-time 10 \
+        create_resp=$(ddns_cf_curl "${token}" -s -X POST --max-time 10 \
             "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
-            -H "Authorization: Bearer ${token}" \
             -H "Content-Type: application/json" \
             --data "$create_body")
         create_ok=$(echo "$create_resp" | python3 -c \
@@ -628,9 +643,8 @@ ddns_cf_record_ensure() {
 ddns_cf_cleanup_cross_record() {
     local zone_id="$1" token="$2" type="$3" domain="$4" reason="$5"
     local record_resp exact_records record_count choice record_id content delete_resp delete_ok failed=0
-    record_resp=$(curl -s --max-time 10 \
-        "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?name=${domain}&type=${type}" \
-        -H "Authorization: Bearer ${token}")
+    record_resp=$(ddns_cf_curl "${token}" -s --max-time 10 \
+        "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?name=${domain}&type=${type}")
     if ! exact_records=$(printf '%s' "$record_resp" | ddns_cf_exact_records "$type" "$domain"); then
         warn "无法检查可能残留的 ${type} 记录 ${domain}"
         return 0
@@ -649,9 +663,8 @@ ddns_cf_cleanup_cross_record() {
 
     while IFS=$'\t' read -r record_id content; do
         [ -n "$record_id" ] || continue
-        delete_resp=$(curl -s -X DELETE --max-time 10 \
-            "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${record_id}" \
-            -H "Authorization: Bearer ${token}")
+        delete_resp=$(ddns_cf_curl "${token}" -s -X DELETE --max-time 10 \
+            "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${record_id}")
         delete_ok=$(printf '%s' "$delete_resp" | python3 -c \
             "import sys,json; print(json.load(sys.stdin).get('success',''))" 2>/dev/null)
         if [ "$delete_ok" = "True" ]; then
@@ -1061,7 +1074,7 @@ ddns_install_cloudflare() {
     echo ""
     info "验证 Token 和域名..."
     local ZONE_RESP ZONE_OK ZONE_COUNT ZONE_ID
-    ZONE_RESP=$(curl -s --max-time 10         "https://api.cloudflare.com/client/v4/zones?name=${DDNS_ZONE_NAME}"         -H "Authorization: Bearer ${DDNS_TOKEN}")
+    ZONE_RESP=$(ddns_cf_curl "${DDNS_TOKEN}" -s --max-time 10         "https://api.cloudflare.com/client/v4/zones?name=${DDNS_ZONE_NAME}")
     ZONE_OK=$(echo "$ZONE_RESP" | python3 -c         "import sys,json; print(json.load(sys.stdin).get('success',''))" 2>/dev/null)
     if [ "$ZONE_OK" != "True" ]; then
         error "Token 验证失败，请检查 Token 权限（需要 Zone:DNS:Edit）"
@@ -1190,6 +1203,23 @@ is_true() {
     esac
 }
 
+# 凭据经 curl -K - 从标准输入传入：放在命令行参数里会被本机任意用户从 ps / /proc/*/cmdline 读到。
+curl_config_quote() {
+    printf '%s' "$1" | sed 's/[\\"]/\\&/g'
+}
+
+cf_curl() {
+    local TOKEN="$1"
+    shift
+    curl -K - "$@" <<< "header = \"Authorization: Bearer $(curl_config_quote "$TOKEN")\""
+}
+
+tg_curl() {
+    local BOT="$1" METHOD="$2"
+    shift 2
+    curl -K - "$@" <<< "url = \"https://api.telegram.org/bot$(curl_config_quote "$BOT")/${METHOD}\""
+}
+
 log_line() {
     printf '[%s] %s: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$2" >> "$LOG_FILE"
 }
@@ -1270,8 +1300,7 @@ tg_notify() {
     B_TOKEN=$(grep "^BOT_TOKEN=" "$TG_FILE" | cut -d= -f2-)
     C_ID=$(grep "^CHAT_ID=" "$TG_FILE" | cut -d= -f2-)
     [ -z "$B_TOKEN" ] || [ -z "$C_ID" ] && return 0
-    if ! RESP=$(curl -fsS --max-time 15 \
-        "https://api.telegram.org/bot${B_TOKEN}/sendMessage" \
+    if ! RESP=$(tg_curl "${B_TOKEN}" sendMessage -fsS --max-time 15 \
         --data-urlencode "chat_id=${C_ID}" \
         --data-urlencode "text=${MSG}" \
         --data-urlencode "parse_mode=HTML" 2>/dev/null); then
@@ -1368,7 +1397,7 @@ if { is_true "$ENABLE_A" && [ -z "$DOMAIN4" ]; } || { is_true "$ENABLE_AAAA" && 
     exit 1
 fi
 
-ZONE_ID=$(curl -s --max-time 8 "https://api.cloudflare.com/client/v4/zones?name=${ZONE}"     -H "Authorization: Bearer ${API_TOKEN}" |     python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
+ZONE_ID=$(cf_curl "${API_TOKEN}" -s --max-time 8 "https://api.cloudflare.com/client/v4/zones?name=${ZONE}" |     python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
 [ -z "$ZONE_ID" ] && {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: 获取 Zone ID 失败" >> "$LOG_FILE"
     exit 1
@@ -1379,9 +1408,8 @@ update_record() {
     [ -z "$NEW_IP" ] && return 0
     [ -z "$DOMAIN_NAME" ] && return 0
     local RECORD_INFO RECORD_ID RECORD_COUNT OLD_IP RESULT SUCCESS
-    RECORD_INFO=$(curl -s --max-time 8 \
-        "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${DOMAIN_NAME}&type=${TYPE}" \
-        -H "Authorization: Bearer ${API_TOKEN}" | cf_record_info "$TYPE" "$DOMAIN_NAME")
+    RECORD_INFO=$(cf_curl "${API_TOKEN}" -s --max-time 8 \
+        "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${DOMAIN_NAME}&type=${TYPE}" | cf_record_info "$TYPE" "$DOMAIN_NAME")
     case "$RECORD_INFO" in
         DUPLICATE\|*)
             RECORD_COUNT=${RECORD_INFO#*|}
@@ -1396,7 +1424,7 @@ update_record() {
         write_record_status "$TYPE" "$DOMAIN_NAME" missing "" "$NEW_IP"
         return 1
     }
-    OLD_IP=$(curl -s --max-time 8         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}"         -H "Authorization: Bearer ${API_TOKEN}" |         python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'])" 2>/dev/null)
+    OLD_IP=$(cf_curl "${API_TOKEN}" -s --max-time 8         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" |         python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'])" 2>/dev/null)
     # OLD_IP 为空说明查询失败，跳过本次更新避免误推 Telegram
     if [ -z "$OLD_IP" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: ${TYPE} 无法获取当前记录值，跳过更新" >> "$LOG_FILE"
@@ -1425,9 +1453,8 @@ update_record() {
     fi
     # 二次校验：再次查询确认 OLD_IP 是否真的不一样（防止偶发查询返回错误数据）
     local VERIFY_IP
-    VERIFY_IP=$(curl -s --max-time 8 \
-        "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" \
-        -H "Authorization: Bearer ${API_TOKEN}" | \
+    VERIFY_IP=$(cf_curl "${API_TOKEN}" -s --max-time 8 \
+        "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" | \
         python3 -c "import sys,json; print(json.load(sys.stdin)['result']['content'])" 2>/dev/null)
     if [ "$NEW_IP" = "$VERIFY_IP" ]; then
         local PREV_IP
@@ -1457,9 +1484,8 @@ update_record() {
     local JSON_BODY
     JSON_BODY=$(printf '{"type":"%s","name":"%s","content":"%s","ttl":%s,"proxied":%s}' \
         "$TYPE" "$DOMAIN_NAME" "$NEW_IP" "$TTL" "$PROXIED")
-    RESULT=$(curl -s -X PUT --max-time 10 \
+    RESULT=$(cf_curl "${API_TOKEN}" -s -X PUT --max-time 10 \
         "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" \
-        -H "Authorization: Bearer ${API_TOKEN}" \
         -H "Content-Type: application/json" \
         --data "$JSON_BODY")
     SUCCESS=$(echo "$RESULT" | python3 -c         "import sys,json; print(json.load(sys.stdin).get('success'))" 2>/dev/null)
@@ -1820,6 +1846,23 @@ fqdn_dot() {
     esac
 }
 
+# 凭据经 curl -K - 从标准输入传入：放在命令行参数里会被本机任意用户从 ps / /proc/*/cmdline 读到。
+curl_config_quote() {
+    printf '%s' "$1" | sed 's/[\\"]/\\&/g'
+}
+
+cf_curl() {
+    local TOKEN="$1"
+    shift
+    curl -K - "$@" <<< "header = \"Authorization: Bearer $(curl_config_quote "$TOKEN")\""
+}
+
+tg_curl() {
+    local BOT="$1" METHOD="$2"
+    shift 2
+    curl -K - "$@" <<< "url = \"https://api.telegram.org/bot$(curl_config_quote "$BOT")/${METHOD}\""
+}
+
 log_line() {
     printf '[%s] %s: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$2" >> "$LOG_FILE"
 }
@@ -1899,8 +1942,7 @@ tg_notify() {
     B_TOKEN=$(grep "^BOT_TOKEN=" "$TG_FILE" | cut -d= -f2-)
     C_ID=$(grep "^CHAT_ID=" "$TG_FILE" | cut -d= -f2-)
     [ -z "$B_TOKEN" ] || [ -z "$C_ID" ] && return 0
-    if ! RESP=$(curl -fsS --max-time 15 \
-        "https://api.telegram.org/bot${B_TOKEN}/sendMessage" \
+    if ! RESP=$(tg_curl "${B_TOKEN}" sendMessage -fsS --max-time 15 \
         --data-urlencode "chat_id=${C_ID}" \
         --data-urlencode "text=${MSG}" \
         --data-urlencode "parse_mode=HTML" 2>/dev/null); then
@@ -2423,8 +2465,7 @@ IPv4：$(ddns_cfg_domain4)"
                 TG_DOMAIN_TEXT="${TG_DOMAIN_TEXT}
 IPv6：$(ddns_cfg_domain6)"
             fi
-            if ! RESP=$(curl -fsS --max-time 10 \
-                "https://api.telegram.org/bot${BOT}/sendMessage" \
+            if ! RESP=$(ddns_tg_curl "${BOT}" sendMessage -fsS --max-time 10 \
                 --data-urlencode "chat_id=${CHAT}" \
                 --data-urlencode "text=🔔 DDNS 通知测试
 ${TG_DOMAIN_TEXT}

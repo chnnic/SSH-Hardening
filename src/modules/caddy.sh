@@ -147,6 +147,35 @@ caddy_uninstall() {
 }
 
 # ── 重载配置 ──────────────────────────────────────────────
+# 校验 Caddyfile。错误写入私有临时文件后存进 CADDY_VALIDATE_ERR，不使用可被他人预建的固定 /tmp 路径。
+caddy_validate() {
+    local FILE="$1" ERR RC=0
+    CADDY_VALIDATE_ERR=""
+    ERR=$(mktemp) || { CADDY_VALIDATE_ERR="无法创建临时文件"; return 1; }
+    caddy validate --config "$FILE" 2>"$ERR" || RC=$?
+    CADDY_VALIDATE_ERR=$(cat "$ERR" 2>/dev/null)
+    rm -f "$ERR"
+    return "$RC"
+}
+
+caddy_print_validate_err() {
+    local l
+    while IFS= read -r l; do echo -e "  ${RED}$l${NC}"; done <<< "$CADDY_VALIDATE_ERR"
+}
+
+# 用候选文件替换 Caddyfile：mktemp 建出的文件是 0600，直接 mv 会让 User=caddy 的服务读不到配置。
+# 沿用原文件的权限和属主；原文件不存在时用 644。
+caddy_install_candidate() {
+    local TMP="$1" MODE="644" OWNER=""
+    if [ -f "$CADDYFILE" ]; then
+        MODE=$(stat -c '%a' "$CADDYFILE" 2>/dev/null || echo 644)
+        OWNER=$(stat -c '%u:%g' "$CADDYFILE" 2>/dev/null || true)
+    fi
+    chmod "$MODE" "$TMP" || return 1
+    [ -z "$OWNER" ] || chown "$OWNER" "$TMP" 2>/dev/null || true
+    mv "$TMP" "$CADDYFILE"
+}
+
 # 安全追加 Caddy 配置块：先备份 → 追加 → validate，失败则还原，不污染正式配置
 caddy_append_safe() {
     local BLOCK="$1"
@@ -159,20 +188,20 @@ caddy_append_safe() {
         : > "$TMP"
     fi
     printf '%s\n' "$BLOCK" >> "$TMP" || { rm -f "$TMP"; return 1; }
-    if caddy validate --config "$TMP" 2>/tmp/caddy_err; then
-        mv "$TMP" "$CADDYFILE" || { rm -f "$TMP"; return 1; }
+    if caddy_validate "$TMP"; then
+        caddy_install_candidate "$TMP" || { rm -f "$TMP"; return 1; }
         return 0
     fi
     rm -f "$TMP"
     error "新配置验证失败，已还原（未写入）："
-    while IFS= read -r l; do echo -e "  ${RED}$l${NC}"; done < /tmp/caddy_err
+    caddy_print_validate_err
     return 1
 }
 
 caddy_reload_config() {
     echo ""
     info "验证 Caddyfile 语法..."
-    if caddy validate --config "$CADDYFILE" 2>/tmp/caddy_err; then
+    if caddy_validate "$CADDYFILE"; then
         info "语法验证通过 ✓"
         if svc_is_active caddy; then
             caddy reload --config "$CADDYFILE" 2>/dev/null || { error "Caddy 配置重载失败"; return 1; }
@@ -186,7 +215,7 @@ caddy_reload_config() {
         fi
     else
         error "Caddyfile 语法错误："
-        while IFS= read -r l; do echo -e "  ${RED}$l${NC}"; done < /tmp/caddy_err
+        caddy_print_validate_err
         return 1
     fi
 }
@@ -496,13 +525,14 @@ PYEOF
         error "无法生成删除后的 Caddy 配置"
         return 1
     fi
-    if ! caddy validate --config "$TMP" 2>/tmp/caddy_err; then
+    if ! caddy_validate "$TMP"; then
         rm -f "$TMP"
         error "删除后的 Caddy 配置验证失败，原配置未修改"
+        caddy_print_validate_err
         return 1
     fi
-    cp "$CADDYFILE" "$BAK" || { rm -f "$TMP"; return 1; }
-    mv "$TMP" "$CADDYFILE" || { rm -f "$TMP"; return 1; }
+    cp -p "$CADDYFILE" "$BAK" || { rm -f "$TMP"; return 1; }
+    caddy_install_candidate "$TMP" || { rm -f "$TMP"; return 1; }
     if caddy_reload_config; then
         rm -f "$BAK"
         info "站点 ${DOMAIN} 已删除 ✓"
