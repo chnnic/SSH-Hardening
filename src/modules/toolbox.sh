@@ -8,7 +8,7 @@ config_backup_allowed_roots() {
         etc/hostname etc/hosts \
         etc/ssh/sshd_config etc/ssh/sshd_config.d root/.ssh/authorized_keys \
         etc/fail2ban etc/ufw etc/firewalld etc/nftables.conf etc/nftables.d/vps-tools-nftpf.nft etc/nft-port-forward \
-        etc/sysctl.conf etc/sysctl.d/99-vps-bbr.conf etc/sysctl.d/99-ipv6-disable.conf etc/sysctl.d/99-vps-nftpf-forward.conf \
+        etc/sysctl.conf etc/sysctl.d/99-vps-bbr.conf etc/sysctl.d/99-ipv6-disable.conf etc/sysctl.d/99-vps-nftpf-forward.conf etc/sysctl.d/99-vps-swappiness.conf \
         etc/gai.conf etc/resolv.conf etc/resolvconf.conf etc/systemd/resolved.conf etc/systemd/resolved.conf.d \
         etc/NetworkManager/conf.d etc/NetworkManager/system-connections etc/resolvconf/resolv.conf.d \
         etc/caddy root/ddns.sh root/.cf_token root/.hw_dns_aksk root/.cf_zone root/.cf_tg root/.cf_last_change \
@@ -43,8 +43,23 @@ config_archive_validate() {
     done < <(tar -tzf "$FILE")
 }
 
+# 把相对链接目标按 BASE 目录展开为绝对路径；越过根目录时失败。
+config_link_normalize() {
+    local BASE="$1" TARGET="$2" PART PARTS=() OUT=()
+    IFS=/ read -r -a PARTS <<< "$BASE/$TARGET"
+    for PART in "${PARTS[@]}"; do
+        case "$PART" in
+            ''|.) ;;
+            ..) [ "${#OUT[@]}" -gt 0 ] || return 1; OUT=("${OUT[@]:0:${#OUT[@]}-1}") ;;
+            *) OUT+=("$PART") ;;
+        esac
+    done
+    local IFS=/
+    printf '/%s\n' "${OUT[*]}"
+}
+
 config_archive_extract() {
-    local FILE="$1" STAGE LINK REL TARGET ROOT SRC DEST RESTORE_ROOT
+    local FILE="$1" STAGE LINK REL TARGET ABS ROOT SRC DEST RESTORE_ROOT
     RESTORE_ROOT="${CONFIG_RESTORE_ROOT:-/}"
     STAGE=$(mktemp -d) || return 1
     if ! tar -xzf "$FILE" -C "$STAGE" --no-same-owner 2>/dev/null; then
@@ -55,14 +70,17 @@ config_archive_extract() {
     while IFS= read -r LINK; do
         REL=${LINK#"$STAGE"/}
         TARGET=$(readlink "$LINK" 2>/dev/null || true)
+        # 相对链接先按链接所在目录展开：Ubuntu 默认的 resolv.conf 就是 ../run/systemd/resolve/stub-resolv.conf。
         case "$TARGET" in
-            /*)
-                case "$REL:$TARGET" in
-                    etc/resolv.conf:/run/systemd/resolve/*|etc/resolv.conf:/run/NetworkManager/*|etc/resolv.conf:/run/resolvconf/*) ;;
-                    *) rm -rf "$STAGE"; error "归档包含不安全符号链接：$REL -> $TARGET"; return 1 ;;
-                esac
-                ;;
-            ../*|*/../*|*/..) rm -rf "$STAGE"; error "归档包含越界符号链接：$REL -> $TARGET"; return 1 ;;
+            /*) ABS="$TARGET" ;;
+            ../*|*/../*|*/..)
+                ABS=$(config_link_normalize "$(dirname "$REL")" "$TARGET") \
+                    || { rm -rf "$STAGE"; error "归档包含越界符号链接：$REL -> $TARGET"; return 1; } ;;
+            *) continue ;;
+        esac
+        case "$REL:$ABS" in
+            etc/resolv.conf:/run/systemd/resolve/*|etc/resolv.conf:/run/NetworkManager/*|etc/resolv.conf:/run/resolvconf/*) ;;
+            *) rm -rf "$STAGE"; error "归档包含不安全符号链接：$REL -> $TARGET"; return 1 ;;
         esac
     done < <(find "$STAGE" -type l 2>/dev/null)
     while IFS= read -r ROOT; do

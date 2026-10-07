@@ -137,9 +137,9 @@ swap_create() {
     info "Swap 已启用 ✓"
 
     # 写入 /etc/fstab 持久化
-    if ! awk -v target="$SWAP_FILE" '$1 == target {found=1} END {exit !found}' /etc/fstab 2>/dev/null; then
-        echo "${SWAP_FILE} none swap sw 0 0" >> /etc/fstab || { error "无法写入 /etc/fstab，Swap 仅当前启动有效"; return 1; }
-        info "已写入 /etc/fstab，重启后自动生效 ✓"
+    if ! awk -v target="$SWAP_FILE" '$1 == target {found=1} END {exit !found}' "$SWAP_FSTAB" 2>/dev/null; then
+        swap_fstab_update add "$SWAP_FILE" || { error "无法写入 ${SWAP_FSTAB}，Swap 仅当前启动有效"; return 1; }
+        info "已写入 ${SWAP_FSTAB}，重启后自动生效 ✓"
     fi
 
     echo ""
@@ -194,16 +194,56 @@ swap_delete() {
     info "Swap 已关闭 ✓"
 
     # 从 fstab 移除
-    if awk -v target="$TARGET" '$1 == target {found=1} END {exit !found}' /etc/fstab 2>/dev/null; then
-        awk -v target="$TARGET" '$1 != target {print}' /etc/fstab > /etc/fstab.tmp \
-            && mv /etc/fstab.tmp /etc/fstab || { error "更新 /etc/fstab 失败"; swapon "$TARGET" 2>/dev/null || true; return 1; }
-        info "已从 /etc/fstab 移除 ✓"
+    if awk -v target="$TARGET" '$1 == target {found=1} END {exit !found}' "$SWAP_FSTAB" 2>/dev/null; then
+        swap_fstab_update remove "$TARGET" || { error "更新 ${SWAP_FSTAB} 失败"; swapon "$TARGET" 2>/dev/null || true; return 1; }
+        info "已从 ${SWAP_FSTAB} 移除 ✓"
     fi
 
     # 如果是文件则删除
     if [ -f "$TARGET" ]; then
         rm -f "$TARGET" && info "Swap 文件已删除 ✓"
     fi
+}
+
+SWAP_FSTAB="${SWAP_FSTAB:-/etc/fstab}"
+SWAP_SYSCTL_CONF="${SWAP_SYSCTL_CONF:-/etc/sysctl.conf}"
+# 文件名排在 99-sysctl.conf、99-vps-bbr.conf 之后，systemd-sysctl 加载时以它为准。
+SWAP_SYSCTL_DROPIN="${SWAP_SYSCTL_DROPIN:-/etc/sysctl.d/99-vps-swappiness.conf}"
+
+# 原子更新 fstab：原文件末尾缺换行时先补上，避免新行拼到最后一行（会让该挂载项失效）。
+swap_fstab_update() {
+    local ACTION="$1" TARGET="$2" TMP MODE
+    TMP=$(mktemp "${SWAP_FSTAB}.vps-tools.XXXXXX") || return 1
+    case "$ACTION" in
+        add)
+            if [ -s "$SWAP_FSTAB" ]; then
+                cat "$SWAP_FSTAB" > "$TMP" || { rm -f "$TMP"; return 1; }
+                [ -z "$(tail -c 1 "$SWAP_FSTAB")" ] || printf '\n' >> "$TMP" || { rm -f "$TMP"; return 1; }
+            fi
+            printf '%s none swap sw 0 0\n' "$TARGET" >> "$TMP" || { rm -f "$TMP"; return 1; } ;;
+        remove)
+            awk -v target="$TARGET" '$1 != target {print}' "$SWAP_FSTAB" > "$TMP" || { rm -f "$TMP"; return 1; } ;;
+        *) rm -f "$TMP"; return 1 ;;
+    esac
+    MODE=$(stat -c '%a' "$SWAP_FSTAB" 2>/dev/null || echo 644)
+    chmod "$MODE" "$TMP" && mv "$TMP" "$SWAP_FSTAB" || { rm -f "$TMP"; return 1; }
+}
+
+# 持久化 swappiness：写独立的 sysctl.d 文件（Debian 13 起 systemd 不再读取 sysctl.conf），
+# 同时把 sysctl.conf 里已有的生效行改成同一值（非 systemd 系统最后读取它，否则会覆盖）。
+swap_persist_swappiness() {
+    local VAL="$1" TMP MODE
+    mkdir -p "$(dirname "$SWAP_SYSCTL_DROPIN")" || return 1
+    TMP=$(mktemp "${SWAP_SYSCTL_DROPIN}.tmp.XXXXXX") || return 1
+    printf '# VPS TOOLS Swap 菜单管理\nvm.swappiness = %s\n' "$VAL" > "$TMP" \
+        && chmod 644 "$TMP" && mv "$TMP" "$SWAP_SYSCTL_DROPIN" || { rm -f "$TMP"; return 1; }
+    [ -f "$SWAP_SYSCTL_CONF" ] || return 0
+    grep -qE '^[[:space:]]*vm\.swappiness[[:space:]]*=' "$SWAP_SYSCTL_CONF" || return 0
+    TMP=$(mktemp "${SWAP_SYSCTL_CONF}.tmp.XXXXXX") || return 1
+    awk -v value="$VAL" '/^[[:space:]]*vm\.swappiness[[:space:]]*=/ { print "vm.swappiness = " value; next } { print }' \
+        "$SWAP_SYSCTL_CONF" > "$TMP" || { rm -f "$TMP"; return 1; }
+    MODE=$(stat -c '%a' "$SWAP_SYSCTL_CONF" 2>/dev/null || echo 644)
+    chmod "$MODE" "$TMP" && mv "$TMP" "$SWAP_SYSCTL_CONF" || { rm -f "$TMP"; return 1; }
 }
 
 # BBR 预设也持久化 vm.swappiness，且 systemd 下 99-vps-bbr.conf 晚于
@@ -259,15 +299,11 @@ swap_set_swappiness() {
     # 立即生效
     echo "$VAL" > /proc/sys/vm/swappiness 2>/dev/null || { error "无法修改当前 swappiness"; return 1; }
 
-    # 持久化到 sysctl.conf
-    if grep -q "vm.swappiness" /etc/sysctl.conf 2>/dev/null; then
-        sed -i "s/^vm.swappiness.*/vm.swappiness = ${VAL}/" /etc/sysctl.conf || return 1
-    else
-        echo "vm.swappiness = ${VAL}" >> /etc/sysctl.conf || return 1
-    fi
+    [ "$(cat /proc/sys/vm/swappiness 2>/dev/null)" = "$VAL" ] || { error "swappiness 写入后回读不一致"; return 1; }
 
-    sysctl -p &>/dev/null || { error "sysctl 配置加载失败"; return 1; }
+    swap_persist_swappiness "$VAL" || { error "无法持久化 swappiness（${SWAP_SYSCTL_DROPIN}），当前值仅本次启动有效"; return 1; }
     swap_sync_bbr_swappiness "$VAL" || return 1
+    audit_action "设置 swappiness 为 ${VAL}" SUCCESS
     info "swappiness 已设置为 ${VAL}，重启后持续生效 ✓"
 }
 

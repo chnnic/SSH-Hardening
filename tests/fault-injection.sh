@@ -1116,4 +1116,87 @@ self_reconcile_tc_after_update >/dev/null \
     [ ! -e "$TMP/update-download" ] || { echo "self_update downloaded before resolving the pending rollback" >&2; exit 1; }
 )
 
+# Caddyfile replacements keep a readable mode for User=caddy, and errors never go to a fixed /tmp path.
+(
+    CADDYFILE="$TMP/caddy/Caddyfile"
+    mkdir -p "$TMP/caddy"
+    printf 'example.com {\n}\n' > "$CADDYFILE"
+    chmod 644 "$CADDYFILE"
+    error() { :; }
+    caddy() { return 0; }
+    caddy_append_safe 'b.example.com {
+}' || { echo "Caddy append failed" >&2; exit 1; }
+    [ "$(ls -l "$CADDYFILE" | cut -c1-10)" = "-rw-r--r--" ] || { echo "Caddyfile lost its 644 mode after an edit" >&2; exit 1; }
+    caddy() { echo 'bad directive' >&2; return 1; }
+    if caddy_append_safe 'c.example.com {' >/dev/null 2>&1; then echo "Invalid Caddy block was accepted" >&2; exit 1; fi
+    [ "$CADDY_VALIDATE_ERR" = 'bad directive' ] || { echo "Caddy validation error was not captured" >&2; exit 1; }
+)
+! grep -q '/tmp/caddy_err' "$ROOT/SSH-Hardening.sh" || { echo "Caddy still writes errors to a fixed /tmp path" >&2; exit 1; }
+
+# Ubuntu's relative resolv.conf link restores; links escaping the allowlist are still rejected.
+(
+    mkdir -p "$TMP/rel-src/etc"
+    ln -s ../run/systemd/resolve/stub-resolv.conf "$TMP/rel-src/etc/resolv.conf"
+    tar -czf "$TMP/rel-link.tar.gz" -C "$TMP/rel-src" etc/resolv.conf
+    export CONFIG_RESTORE_ROOT="$TMP/rel-restore"
+    error() { :; }; warn() { :; }; info() { :; }
+    config_archive_extract "$TMP/rel-link.tar.gz" >/dev/null 2>&1 \
+        || { echo "Ubuntu relative resolv.conf link was rejected" >&2; exit 1; }
+    [ "$(readlink "$CONFIG_RESTORE_ROOT/etc/resolv.conf")" = ../run/systemd/resolve/stub-resolv.conf ] \
+        || { echo "Relative resolv.conf link was not restored" >&2; exit 1; }
+    mkdir -p "$TMP/bad-src/etc/ssh"
+    ln -s ../../root/.ssh/authorized_keys "$TMP/bad-src/etc/ssh/sshd_config"
+    tar -czf "$TMP/bad-link.tar.gz" -C "$TMP/bad-src" etc/ssh/sshd_config
+    if config_archive_extract "$TMP/bad-link.tar.gz" >/dev/null 2>&1; then echo "Relative link outside the allowlist was accepted" >&2; exit 1; fi
+    if config_link_normalize etc ../../../x >/dev/null; then echo "Link above the root was normalized" >&2; exit 1; fi
+)
+
+# DDNS credentials go to curl through stdin, never through argv.
+(
+    curl() { printf '%s\n' "$*" > "$TMP/curl-argv"; cat > "$TMP/curl-stdin"; }
+    ddns_cf_curl 'cf-SECRET' -s 'https://api.cloudflare.com/client/v4/zones?name=x' >/dev/null
+    ! grep -q 'SECRET' "$TMP/curl-argv" && grep -qx 'header = "Authorization: Bearer cf-SECRET"' "$TMP/curl-stdin" \
+        || { echo "Cloudflare token was exposed in curl arguments" >&2; exit 1; }
+    ddns_tg_curl '123:BOT-SECRET' sendMessage -fsS --data-urlencode 'text=hi' >/dev/null
+    ! grep -q 'SECRET' "$TMP/curl-argv" && grep -qx 'url = "https://api.telegram.org/bot123:BOT-SECRET/sendMessage"' "$TMP/curl-stdin" \
+        || { echo "Telegram bot token was exposed in curl arguments" >&2; exit 1; }
+)
+! grep -qE '\-H "Authorization: Bearer|api\.telegram\.org/bot\$\{' "$ROOT/SSH-Hardening.sh" \
+    || { echo "A curl call still puts credentials on the command line" >&2; exit 1; }
+
+# Ubuntu mirrors use ubuntu-ports on non-x86, and an update without usable indexes is not success.
+(
+    dpkg() { echo arm64; }
+    [ "$(mirror_ubuntu_arch_url https://mirrors.aliyun.com/ubuntu)" = https://mirrors.aliyun.com/ubuntu-ports ] \
+        && [ "$(mirror_ubuntu_arch_url http://archive.ubuntu.com/ubuntu)" = http://ports.ubuntu.com/ubuntu-ports ] \
+        || { echo "arm64 Ubuntu mirror did not switch to ubuntu-ports" >&2; exit 1; }
+    dpkg() { echo amd64; }
+    [ "$(mirror_ubuntu_arch_url https://mirrors.aliyun.com/ubuntu)" = https://mirrors.aliyun.com/ubuntu ] \
+        || { echo "amd64 Ubuntu mirror was rewritten" >&2; exit 1; }
+    apt-cache() { printf 'coreutils:\n  Installed: 9.4-3\n  Candidate: (none)\n'; }
+    if mirror_apt_index_usable; then echo "Missing package candidates counted as a usable mirror" >&2; exit 1; fi
+    apt-cache() { printf 'coreutils:\n  Installed: 9.4-3\n  Candidate: 9.4-3\n'; }
+    mirror_apt_index_usable || { echo "Usable mirror was rejected" >&2; exit 1; }
+)
+
+# fstab edits never glue onto a last line without a newline; swappiness persists to its own sysctl.d file.
+(
+    SWAP_FSTAB="$TMP/fstab"
+    printf 'UUID=abc / ext4 defaults 0 1\nUUID=def /boot ext4 defaults 0 2' > "$SWAP_FSTAB"
+    swap_fstab_update add /swapfile || { echo "fstab add failed" >&2; exit 1; }
+    grep -qx 'UUID=def /boot ext4 defaults 0 2' "$SWAP_FSTAB" && grep -qx '/swapfile none swap sw 0 0' "$SWAP_FSTAB" \
+        || { echo "fstab swap line was glued onto the previous entry" >&2; exit 1; }
+    swap_fstab_update remove /swapfile || { echo "fstab remove failed" >&2; exit 1; }
+    ! grep -q swapfile "$SWAP_FSTAB" && grep -qx 'UUID=def /boot ext4 defaults 0 2' "$SWAP_FSTAB" \
+        || { echo "fstab remove damaged other entries" >&2; exit 1; }
+
+    SWAP_SYSCTL_CONF="$TMP/sysctl.conf"
+    SWAP_SYSCTL_DROPIN="$TMP/sysctl.d/99-vps-swappiness.conf"
+    printf '#vm.swappiness=10\n  vm.swappiness = 60\n' > "$SWAP_SYSCTL_CONF"
+    swap_persist_swappiness 30 || { echo "swappiness persistence failed" >&2; exit 1; }
+    grep -qx 'vm.swappiness = 30' "$SWAP_SYSCTL_DROPIN" || { echo "swappiness drop-in was not written" >&2; exit 1; }
+    grep -qx '#vm.swappiness=10' "$SWAP_SYSCTL_CONF" && grep -qx 'vm.swappiness = 30' "$SWAP_SYSCTL_CONF" \
+        && ! grep -q '= 60' "$SWAP_SYSCTL_CONF" || { echo "sysctl.conf kept a conflicting swappiness line" >&2; exit 1; }
+)
+
 echo "Fault injection tests passed."
