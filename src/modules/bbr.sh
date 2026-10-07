@@ -112,6 +112,26 @@ bbr_runtime_snapshot() {
     mv "$TMP" "$DEST" || { rm -f "$TMP"; return 1; }
 }
 
+# 旧安装曾持久化、但没有记录首次基线的键：标记为“原值未知”，以后不能把调优值补采成基线。
+bbr_baseline_unknown() {
+    [ -f "$BBR_BASELINE_FILE" ] && grep -qxF "# VPS_TOOLS_BASELINE_UNKNOWN=$1" "$BBR_BASELINE_FILE"
+}
+
+bbr_baseline_mark_unknown() {
+    local KEY TMP ADDED=0
+    [ "$#" -gt 0 ] || return 0
+    mkdir -p "$(dirname "$BBR_BASELINE_FILE")" || return 1
+    TMP=$(mktemp "${BBR_BASELINE_FILE}.tmp.XXXXXX") || return 1
+    [ ! -f "$BBR_BASELINE_FILE" ] || cp "$BBR_BASELINE_FILE" "$TMP" || { rm -f "$TMP"; return 1; }
+    for KEY in "$@"; do
+        bbr_baseline_unknown "$KEY" && continue
+        printf '# VPS_TOOLS_BASELINE_UNKNOWN=%s\n' "$KEY" >> "$TMP" || { rm -f "$TMP"; return 1; }
+        ADDED=$(( ADDED + 1 ))
+    done
+    [ "$ADDED" -gt 0 ] || { rm -f "$TMP"; return 0; }
+    chmod 600 "$TMP" && mv "$TMP" "$BBR_BASELINE_FILE" || { rm -f "$TMP"; return 1; }
+}
+
 bbr_ensure_baseline() {
     if [ ! -s "$BBR_BASELINE_FILE" ]; then
         bbr_runtime_snapshot "$BBR_BASELINE_FILE" "" baseline || {
@@ -130,6 +150,7 @@ bbr_ensure_baseline() {
             if [ -f "$SYSCTL_FILE" ] && bbr_config_has_key "$(cat "$SYSCTL_FILE")" "$KEY"; then
                 continue
             fi
+            bbr_baseline_unknown "$KEY" && continue
             printf '%s = %s\n' "$KEY" "$VALUE" >> "$TMP"
             ADDED=$(( ADDED + 1 ))
         fi
@@ -359,6 +380,16 @@ bbr_sysctl_write_verified() {
     if [ ! -w "$PATHNAME" ]; then
         error "参数无写入权限或只读：${KEY}"
         return 1
+    fi
+    # 空值（如内核默认的 ip_local_reserved_ports）直接写 /proc：sysctl -w key= 在部分实现中报格式错误。
+    if [ -z "$VALUE" ]; then
+        if ! printf '\n' > "$PATHNAME" 2>/dev/null; then
+            error "参数写入失败：${KEY}"
+            return 1
+        fi
+        ACTUAL=$(sysctl -n "$KEY" 2>/dev/null) || { error "参数写入后无法回读：${KEY}"; return 1; }
+        [ -z "$(printf '%s\n' "$ACTUAL" | bbr_sysctl_normalize)" ] || { error "参数回读不一致：${KEY}，期望空值，实际 ${ACTUAL}"; return 1; }
+        return 0
     fi
     # IPv6 即使重复写入 forwarding=1 也可能清掉 RA 路由，避免无意义重写。
     case "$KEY" in
@@ -690,6 +721,14 @@ bbr_restore_routing_filter() {
             [ -z "$CURRENT" ] || OUT="${OUT}${KEY} = ${CURRENT}"$'\n'
         fi
     done <<< "$CONFIG"
+    # 备份里没有、当前配置却在管理的转发 / RA 键：备份没有表达意图，保留当前运行值，
+    # 否则会被当作“不再管理”自动恢复到基线，静默关闭转发。
+    while IFS= read -r KEY; do
+        bbr_restore_is_routing_key "$KEY" || continue
+        bbr_config_has_key "$CONFIG" "$KEY" && continue
+        CURRENT=$(sysctl -n "$KEY" 2>/dev/null | bbr_sysctl_normalize) || continue
+        [ -n "$CURRENT" ] && OUT="${OUT}${KEY} = ${CURRENT}"$'\n'
+    done < <(bbr_config_keys "$OLD" | awk '!seen[$0]++')
     BBR_RESTORE_CONFIG="$OUT"
 }
 
@@ -798,6 +837,7 @@ bbr_apply_sysctl() (
     exec 9>>"$TX_LOCK" || { error "无法打开 BBR 事务锁：${TX_LOCK}"; return 1; }
     flock -n 9 || { error "另一个 BBR 参数事务正在运行，或当前文件系统不支持 flock（${TX_LOCK}）"; return 1; }
     trap '
+        trap "" INT TERM HUP PIPE
         if [ "$TX_DIRTY" = 1 ]; then
             if bbr_restore_runtime_snapshot "$TX_SNAPSHOT"; then
                 warn "本次运行参数修改已回滚，原持久化配置保留"
@@ -863,8 +903,14 @@ bbr_apply_sysctl() (
                     "$(bbr_baseline_value "$KEY" 2>/dev/null || echo 未记录)"
             done
             printf '%s' "$STALE" | grep -q 'forward' && warn "恢复转发参数可能影响路由/NAT"
+            local STALE_ROUTING=0
+            # 已删除接口的键不会影响路由，不必为它们打断还原流程。
+            for KEY in $STALE; do
+                bbr_restore_is_routing_key "$KEY" && [ -e "$(bbr_sysctl_path "$KEY")" ] && STALE_ROUTING=1
+            done
             ANSWER=n
-            if [ "$STALE_MODE" = baseline ]; then
+            # 转发 / RA 会立即影响路由、NAT 和 Docker：即使是还原模式也必须单独确认。
+            if [ "$STALE_MODE" = baseline ] && [ "$STALE_ROUTING" = 0 ]; then
                 ANSWER=y
             else
                 read -rp "  恢复这些参数到首次基线？(y/N): " ANSWER || ANSWER=n
@@ -876,6 +922,15 @@ bbr_apply_sysctl() (
                     else
                         warn "参数 ${KEY} 缺少首次基线，保留运行值"
                     fi
+                done
+            else
+                # 不恢复时，转发 / RA 继续按当前运行值持久化，避免重启后悄悄改变路由。
+                for KEY in $STALE; do
+                    bbr_restore_is_routing_key "$KEY" || continue
+                    VALUE=$(sysctl -n "$KEY" 2>/dev/null | bbr_sysctl_normalize) || continue
+                    [ -n "$VALUE" ] || continue
+                    CONFIG="${CONFIG}"$'\n'"${KEY} = ${VALUE}"
+                    info "保留 ${KEY} = ${VALUE}（继续持久化）"
                 done
             fi
         fi
@@ -912,9 +967,20 @@ bbr_apply_sysctl() (
         fi
         KEY=$(printf '%s' "${LINE%%=*}" | bbr_sysctl_normalize)
         VALUE=$(printf '%s' "${LINE#*=}" | bbr_sysctl_normalize)
-        if [ "$LINE" = "${LINE#*=}" ] || ! printf '%s\n' "$KEY" | grep -qE '^[[:alnum:]_-]+([./][[:alnum:]_-]+)+$' || [ -z "$VALUE" ]; then
+        if [ "$LINE" = "${LINE#*=}" ] || ! printf '%s\n' "$KEY" | grep -qE '^[[:alnum:]_-]+([./][[:alnum:]_-]+)+$'; then
             error "无效的 sysctl 配置行：${LINE}"
             return 1
+        fi
+        if [ -z "$VALUE" ]; then
+            # 内核默认就是空的保留端口：只在运行时清空，不持久化空值行。
+            if [ "$KEY" != net.ipv4.ip_local_reserved_ports ]; then
+                error "无效的 sysctl 配置行：${LINE}"
+                return 1
+            fi
+            if [ -z "$APPLY_ONLY" ] || printf '%s\n' "$APPLY_ONLY" | grep -Fqx "$KEY"; then
+                [ ! -e "$(bbr_sysctl_path "$KEY")" ] || RUNTIME="${RUNTIME}${KEY} = "$'\n'
+            fi
+            continue
         fi
         if [ -n "$APPLY_ONLY" ] && ! printf '%s\n' "$APPLY_ONLY" | grep -Fqx "$KEY"; then
             printf '%s\n' "$LINE" >> "$TMP_FILE" || return 1
@@ -979,6 +1045,14 @@ bbr_apply_sysctl() (
     TX_DIRTY=0
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
+    local DROPPED_UNKNOWN=()
+    while IFS= read -r KEY; do
+        [ -n "$KEY" ] || continue
+        bbr_config_has_key "$CONFIG" "$KEY" && continue
+        bbr_baseline_value "$KEY" >/dev/null 2>&1 || DROPPED_UNKNOWN+=("$KEY")
+    done < <(bbr_config_keys "$OLD" | awk '!seen[$0]++')
+    bbr_baseline_mark_unknown "${DROPPED_UNKNOWN[@]+"${DROPPED_UNKNOWN[@]}"}" \
+        || warn "无法记录缺少基线的参数，后续基线可能不准确"
     flock -u 9
     exec 9>&-
     [ "$SKIPPED" -eq 0 ] || warn "共跳过 ${SKIPPED} 个内核不存在的参数，已注释保存"
@@ -1282,13 +1356,21 @@ bbr_tc_reconcile_saved() {
         warn "tc 限速当前有效，但持久化配置升级失败"
         return 1
     fi
+    # 自动对账绝不强制覆盖：FORCE 只对用户当时确认的那个 qdisc 有效。
+    local CURRENT_QDISCS CURRENT_ROOT
+    CURRENT_QDISCS=$("$TC_BIN" qdisc show dev "$SAVED_DEV" 2>/dev/null || true)
+    CURRENT_ROOT=$(bbr_tc_root_line "$CURRENT_QDISCS")
+    if [ -n "$CURRENT_ROOT" ] && ! bbr_tc_root_safe_to_replace "$CURRENT_ROOT"; then
+        warn "已保存 ${SAVED_RATE}Mbps 限速，但 ${SAVED_DEV} 现在有外部队列（$(bbr_tc_qdisc_type "$CURRENT_ROOT")），未自动覆盖；如需接管请在限速菜单重新设置"
+        return 1
+    fi
     if bbr_tc_persistence_current \
         && bbr_tc_restore_owned \
         && bbr_tc_is_owned "$SAVED_DEV" "$TC_BIN"; then
         info "检测到已保存的 ${SAVED_RATE}Mbps 限速未生效，已自动恢复 ✓"
         return 0
     fi
-    if bbr_tc_apply_runtime "$SAVED_DEV" "$SAVED_RATE" "$SAVED_BURST" "$TC_BIN" "$SAVED_FORCE"; then
+    if bbr_tc_apply_runtime "$SAVED_DEV" "$SAVED_RATE" "$SAVED_BURST" "$TC_BIN" 0; then
         if bbr_tc_write_persistence "$SAVED_DEV" "$SAVED_RATE" "$SAVED_BURST" "$SAVED_FORCE" \
             && bbr_tc_is_owned "$SAVED_DEV" "$TC_BIN"; then
             info "检测到已保存的 ${SAVED_RATE}Mbps 限速未生效，已自动恢复并升级持久化配置 ✓"
@@ -1646,6 +1728,11 @@ bbr_buffer_bytes() {
 # fs.file-max 只在原值更低时提高：systemd 240+ 通常已设为极大值，写死会反而降低。
 bbr_file_max_needed() {
     local REF
+    # 旧安装已写入 fs.file-max 却没有基线：当前值就是本工具设的，不能据此判断“不需要”而丢掉持久化。
+    if ! bbr_baseline_value fs.file-max >/dev/null 2>&1 && [ -f "$SYSCTL_FILE" ] \
+        && bbr_config_has_key "$(cat "$SYSCTL_FILE")" fs.file-max; then
+        return 0
+    fi
     REF=$(bbr_baseline_value fs.file-max 2>/dev/null || sysctl -n fs.file-max 2>/dev/null || true)
     case "$REF" in ''|*[!0-9]*) return 0 ;; esac
     [ "${#REF}" -lt 19 ] || return 1
@@ -1809,11 +1896,19 @@ bbr_check_limitnofile() {
             read -rp "  是否为 ${svc} 写入 LimitNOFILE=1048576 的 drop-in？(y/N，默认N): " DOLN
             [ -z "$DOLN" ] && DOLN="n"
             if echo "$DOLN" | grep -qiE '^y(es)?$'; then
-                local DROPDIR="/etc/systemd/system/${svc}.service.d"
-                mkdir -p "$DROPDIR" 2>/dev/null
-                printf '[Service]\nLimitNOFILE=1048576\n' > "${DROPDIR}/99-nofile.conf"
-                systemctl daemon-reload 2>/dev/null
-                info "已写入 ${DROPDIR}/99-nofile.conf，重启 ${svc} 后生效：systemctl restart ${svc}"
+                local DROPDIR="/etc/systemd/system/${svc}.service.d" DROPIN TMP
+                DROPIN="${DROPDIR}/99-vps-tools-nofile.conf"
+                if ! mkdir -p "$DROPDIR" || ! TMP=$(mktemp "${DROPIN}.tmp.XXXXXX"); then
+                    error "无法创建 ${DROPDIR}，未写入 LimitNOFILE"
+                    continue
+                fi
+                if ! printf '[Service]\nLimitNOFILE=1048576\n' > "$TMP" || ! chmod 644 "$TMP" || ! mv "$TMP" "$DROPIN"; then
+                    rm -f "$TMP"
+                    error "写入 ${DROPIN} 失败"
+                    continue
+                fi
+                systemctl daemon-reload 2>/dev/null || warn "systemctl daemon-reload 失败，请手动执行"
+                info "已写入 ${DROPIN}，重启 ${svc} 后生效：systemctl restart ${svc}"
             fi
         fi
     done
@@ -1952,8 +2047,15 @@ bbr_refresh_root_qdisc() {
     TYPE=$(bbr_tc_qdisc_type "$LINE")
     case "$TYPE" in
         mq)
-            PARENTS=$(awk '$1 == "qdisc" && $2 != "fq" {
-                for (i = 4; i < NF; i++) if ($i == "parent" && $(i + 1) ~ /^[0-9a-f]*:[0-9a-f]+$/) print $(i + 1)
+            # 只替换 mq 句柄下的内核默认子队列；ingress/clsact（ffff:）和外部 tbf/htb 等不能动。
+            local MQ_MAJOR
+            MQ_MAJOR=$(bbr_tc_qdisc_handle "$LINE"); MQ_MAJOR=${MQ_MAJOR%%:*}; MQ_MAJOR=${MQ_MAJOR:-0}
+            PARENTS=$(awk -v major="$MQ_MAJOR" '$1 == "qdisc" && ($2 == "fq_codel" || $2 == "pfifo_fast") {
+                for (i = 4; i < NF; i++) if ($i == "parent") {
+                    split($(i + 1), p, ":")
+                    m = (p[1] == "" ? "0" : p[1])
+                    if (m == major && p[2] ~ /^[0-9a-f]+$/) print $(i + 1)
+                }
             }' <<< "$QDISCS")
             [ -n "$PARENTS" ] || return 0 ;;
         fq_codel|pfifo_fast) bbr_tc_root_safe_to_replace "$LINE" || return 0 ;;
