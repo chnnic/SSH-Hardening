@@ -402,6 +402,7 @@ change_port() {
         warn "已取消，配置未修改"
         return
     fi
+    ssh_selinux_allow_port "$INPUT_PORT" || { rm -f "$CANDIDATE"; error "未修改 SSH 端口"; return 1; }
     safety_arm ssh_port || { rm -f "$CANDIDATE"; return 1; }
     ssh_install_candidate "$CANDIDATE" || return 1
 

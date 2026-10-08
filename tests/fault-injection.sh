@@ -461,12 +461,8 @@ EOF
     info() { :; }
     warn() { :; }
     error() { :; }
-    swapon() {
-        case "$*" in
-            '--show --noheadings') echo '/tmp/vps-tools-test.swap' ;;
-            '--show --bytes --noheadings') echo '/tmp/vps-tools-test.swap file 1048576 0 -2' ;;
-        esac
-    }
+    SWAP_PROC_SWAPS="$TMP/proc-swaps-delete"
+    printf 'Filename\tType\tSize\tUsed\tPriority\n/tmp/vps-tools-test.swap\tfile\t1024\t0\t-2\n' > "$SWAP_PROC_SWAPS"
     swapoff() { return 1; }
     ! swap_delete <<< $'1\ny' >/dev/null 2>&1 || { echo "Swap delete ignored swapoff failure" >&2; exit 1; }
 )
@@ -1378,6 +1374,123 @@ self_reconcile_tc_after_update >/dev/null \
     grep -qx '127.0.0.1 localhost localhost.localdomain' "$SYSTEM_HOSTS_FILE" && grep -qx '::1 localhost ip6-localhost' "$SYSTEM_HOSTS_FILE" \
         || { echo "Hostname change replaced localhost entries" >&2; exit 1; }
     grep -qx '127.0.1.1 relay01' "$SYSTEM_HOSTS_FILE" || { echo "New hostname was not added to hosts" >&2; exit 1; }
+)
+
+# OpenWrt with openssh-server: restart via the init script when rc-service/service are absent.
+(
+    unset -f restart_ssh
+    eval "$(sed -n '/^restart_ssh() {/,/^}/p' "$ROOT/src/lib/core.sh")"
+    SSH_INITD_DIR="$TMP/openwrt-initd"
+    mkdir -p "$SSH_INITD_DIR"
+    printf '#!/bin/sh\necho "$1" > %q\n' "$TMP/openwrt-sshd" > "$SSH_INITD_DIR/sshd"
+    chmod +x "$SSH_INITD_DIR/sshd"
+    systemd_available() { return 1; }
+    PATH="$TMP/no-service-bin" restart_ssh || { echo "restart_ssh failed on an OpenWrt-style system" >&2; exit 1; }
+    [ "$(cat "$TMP/openwrt-sshd")" = restart ] || { echo "OpenWrt sshd init script was not used" >&2; exit 1; }
+)
+
+# SELinux: a new SSH port is labeled ssh_port_t before sshd is restarted.
+(
+    CALLS="$TMP/semanage-calls"
+    : > "$CALLS"
+    info() { :; }; error() { :; }; audit_action() { :; }
+    getenforce() { echo Enforcing; }
+    semanage() {
+        if [ "$1 $2" = "port -l" ]; then printf 'ssh_port_t                     tcp      22\n'; return 0; fi
+        echo "semanage $*" >> "$CALLS"
+    }
+    ssh_selinux_allow_port 22 || { echo "Already labeled port failed" >&2; exit 1; }
+    [ ! -s "$CALLS" ] || { echo "Already labeled port was relabeled" >&2; exit 1; }
+    ssh_selinux_allow_port 2222 || { echo "SELinux port labeling failed" >&2; exit 1; }
+    grep -qx 'semanage port -a -t ssh_port_t -p tcp 2222' "$CALLS" || { echo "New SSH port was not labeled for SELinux" >&2; exit 1; }
+    getenforce() { echo Disabled; }
+    : > "$CALLS"
+    ssh_selinux_allow_port 3333 && [ ! -s "$CALLS" ] || { echo "SELinux handling ran while disabled" >&2; exit 1; }
+)
+
+# chrony is only "synced" with a selected source; small HTTPS drift does not step the clock.
+(
+    chronyc() { printf 'Reference ID    : 00000000 ()\nLeap status     : Not synchronised\n'; }
+    if ts_chrony_synced; then echo "chrony without sources counted as synced" >&2; exit 1; fi
+    chronyc() { printf 'Reference ID    : A29FC87B (time.cloudflare.com)\nLeap status     : Normal\n'; }
+    ts_chrony_synced || { echo "Synced chrony was not recognized" >&2; exit 1; }
+
+    print_header() { :; }; info() { :; }; warn() { :; }; error() { :; }; menu_div() { :; }; audit_action() { :; }
+    ts_https_fetch_epoch() { date '+%s'; }
+    date() { if [ "${1:-}" = -u ] && [ "${2:-}" = -s ]; then echo stepped > "$TMP/date-stepped"; return 0; fi; command date "$@"; }
+    ts_sync_https fallback >/dev/null 2>&1 || { echo "HTTPS sync failed with an accurate clock" >&2; exit 1; }
+    [ ! -e "$TMP/date-stepped" ] || { echo "HTTPS sync stepped an accurate clock" >&2; exit 1; }
+)
+
+# Time zones must be real TZif files below zoneinfo.
+(
+    TS_ZONEINFO_DIR="$TMP/zoneinfo"
+    mkdir -p "$TS_ZONEINFO_DIR/Asia"
+    printf 'TZif2fake' > "$TS_ZONEINFO_DIR/Asia/Shanghai"
+    printf 'CN +3114+12128 Asia/Shanghai\n' > "$TS_ZONEINFO_DIR/zone.tab"
+    ts_zone_valid Asia/Shanghai || { echo "Valid time zone rejected" >&2; exit 1; }
+    for BAD in zone.tab ../../etc/passwd /etc/passwd 'Asia/../Asia/Shanghai' ''; do
+        if ts_zone_valid "$BAD"; then echo "Invalid time zone accepted: $BAD" >&2; exit 1; fi
+    done
+)
+
+# Caddy fallback download uses the versioned asset and refuses a checksum mismatch.
+(
+    info() { :; }; error() { :; }
+    curl() {
+        local OUT="" PREV="" ARG
+        for ARG in "$@"; do [ "$PREV" = -o ] && OUT="$ARG"; PREV="$ARG"; done
+        case "$*" in
+            *url_effective*) printf 'https://github.com/caddyserver/caddy/releases/tag/v2.11.7' ;;
+            *caddy_2.11.7_linux_amd64.tar.gz*) printf 'tampered' > "$OUT" ;;
+            *caddy_2.11.7_checksums.txt*) printf '%0128d  caddy_2.11.7_linux_amd64.tar.gz\n' 0 > "$OUT" ;;
+            *) return 22 ;;
+        esac
+    }
+    uname() { echo x86_64; }
+    install() { echo installed > "$TMP/caddy-installed"; }
+    [ "$(caddy_latest_tag)" = v2.11.7 ] || { echo "Caddy latest tag not resolved" >&2; exit 1; }
+    if caddy_install_binary >/dev/null 2>&1; then echo "Caddy binary with a bad checksum was installed" >&2; exit 1; fi
+    [ ! -e "$TMP/caddy-installed" ] || { echo "Caddy binary installed despite checksum mismatch" >&2; exit 1; }
+)
+
+# Compose projects get their own default directory.
+(
+    [ "$(docker_compose_project_name 'https://example.com/apps/nextcloud/compose.yaml')" = nextcloud ] \
+        && [ "$(docker_compose_project_name 'https://example.com/x/Uptime-Kuma.yml?token=1')" = uptime-kuma ] \
+        || { echo "Compose project directory name is not per project" >&2; exit 1; }
+)
+
+# Debian resolvconf: DNS goes into head (kept first); dhclient renewals keep the chosen DNS.
+(
+    DNS_RESOLVCONF_HEAD="$TMP/resolvconf-head"
+    printf '# keep this\n' > "$DNS_RESOLVCONF_HEAD"
+    resolvconf() { :; }
+    dns_debian_resolvconf_apply '1.1.1.1 8.8.8.8' '' false || { echo "resolvconf head write failed" >&2; exit 1; }
+    dns_debian_resolvconf_apply '9.9.9.9' '' false || { echo "resolvconf head rewrite failed" >&2; exit 1; }
+    grep -qx '# keep this' "$DNS_RESOLVCONF_HEAD" && grep -qx 'nameserver 9.9.9.9' "$DNS_RESOLVCONF_HEAD" \
+        && ! grep -q '1.1.1.1' "$DNS_RESOLVCONF_HEAD" || { echo "resolvconf head block was not replaced cleanly" >&2; exit 1; }
+    printf 'nameserver 9.9.9.9\nnameserver 192.168.1.1\n' > "$TMP/resolv-prefer"
+    dns_resolv_nameservers_prefer "$TMP/resolv-prefer" '9.9.9.9' '' false || { echo "Preferred DNS order not accepted" >&2; exit 1; }
+    printf 'nameserver 192.168.1.1\nnameserver 9.9.9.9\n' > "$TMP/resolv-prefer"
+    if dns_resolv_nameservers_prefer "$TMP/resolv-prefer" '9.9.9.9' '' false; then echo "DHCP DNS ahead of target accepted" >&2; exit 1; fi
+
+    DNS_DHCLIENT_CONF="$TMP/dhclient.conf"
+    printf 'request subnet-mask;\n' > "$DNS_DHCLIENT_CONF"
+    pgrep() { [ "$2" = dhclient ]; }
+    dns_dhclient_supersede '1.1.1.1 8.8.8.8' || { echo "dhclient supersede failed" >&2; exit 1; }
+    grep -qx 'supersede domain-name-servers 1.1.1.1, 8.8.8.8;' "$DNS_DHCLIENT_CONF" && grep -qx 'request subnet-mask;' "$DNS_DHCLIENT_CONF" \
+        || { echo "dhclient renewals would restore the old DNS" >&2; exit 1; }
+)
+! grep -q 'resolvconf -a vps-tools -x' "$ROOT/SSH-Hardening.sh" || { echo "Debian resolvconf still uses the unsupported -x flag" >&2; exit 1; }
+
+# Swap state comes from /proc/swaps (BusyBox swapon has no --show).
+(
+    SWAP_PROC_SWAPS="$TMP/proc-swaps"
+    printf 'Filename\tType\tSize\tUsed\tPriority\n/swap\\040file\tfile\t2097148\t1024\t-2\n/dev/vda2\tpartition\t1048572\t0\t-3\n' > "$SWAP_PROC_SWAPS"
+    swapon() { echo "swapon: unrecognized option '--show'" >&2; return 1; }
+    swap_is_active '/swap file' && swap_is_active /dev/vda2 || { echo "Active swap not detected without swapon --show" >&2; exit 1; }
+    [ "$(swap_active_list | awk -F'\t' '$1 == "/dev/vda2" { print $3 }')" = 1048572 ] || { echo "Swap size not parsed" >&2; exit 1; }
 )
 
 echo "Fault injection tests passed."

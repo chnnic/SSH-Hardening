@@ -2,14 +2,27 @@
 #  Swap 管理模块
 # ══════════════════════════════════════════════════════════
 
+SWAP_PROC_SWAPS="${SWAP_PROC_SWAPS:-/proc/swaps}"
+
+# 已启用的 swap：名称<TAB>类型<TAB>大小KB<TAB>已用KB。直接读 /proc/swaps，
+# BusyBox（Alpine / OpenWrt）的 swapon 没有 --show。名称中的空格在内核里写作 \040。
+swap_active_list() {
+    [ -r "$SWAP_PROC_SWAPS" ] || return 0
+    awk 'NR > 1 && NF >= 4 { gsub(/\\040/, " ", $1); printf "%s\t%s\t%s\t%s\n", $1, $2, $3, $4 }' "$SWAP_PROC_SWAPS"
+}
+
+swap_is_active() {
+    swap_active_list | cut -f1 | grep -qxF -- "$1"
+}
+
 # ── 显示当前 swap 状态 ────────────────────────────────────
 swap_show_status() {
     echo -e "  ${BOLD}当前 Swap 状态：${NC}"
-    local TOTAL USED FREE
-    if swapon --show 2>/dev/null | grep -q .; then
-        swapon --show --bytes 2>/dev/null | while IFS= read -r line; do
-            echo -e "  ${CYAN}${line}${NC}"
-        done
+    local TOTAL USED FREE NAME TYPE SIZE_KB USED_KB
+    if [ -n "$(swap_active_list)" ]; then
+        while IFS=$'\t' read -r NAME TYPE SIZE_KB USED_KB; do
+            echo -e "  ${CYAN}${NAME}  ${TYPE}  $((SIZE_KB / 1024))MB  已用 $((USED_KB / 1024))MB${NC}"
+        done < <(swap_active_list)
         echo ""
         TOTAL=$(free -m 2>/dev/null | awk '/^Swap/{print $2}')
         USED=$(free -m 2>/dev/null  | awk '/^Swap/{print $3}')
@@ -116,7 +129,7 @@ swap_create() {
     chmod 600 "$NEW_SWAP" || { rm -f "$NEW_SWAP"; return 1; }
     mkswap "$NEW_SWAP" &>/dev/null || { rm -f "$NEW_SWAP"; error "Swap 格式化失败"; return 1; }
 
-    if swapon --show --noheadings 2>/dev/null | awk '{print $1}' | grep -qxF "$SWAP_FILE"; then
+    if swap_is_active "$SWAP_FILE"; then
         warn "已存在 ${SWAP_FILE}，正在安全替换..."
         swapoff "$SWAP_FILE" 2>/dev/null || { rm -f "$NEW_SWAP"; error "旧 Swap 无法关闭，已取消替换"; return 1; }
     fi
@@ -151,7 +164,7 @@ swap_delete() {
     print_header "删除 Swap"
 
     local SWAPS
-    SWAPS=$(swapon --show --noheadings 2>/dev/null | awk '{print $1}')
+    SWAPS=$(swap_active_list | cut -f1)
 
     if [ -z "$SWAPS" ]; then
         warn "当前没有启用的 Swap"
@@ -162,7 +175,7 @@ swap_delete() {
     local i=1
     local SWAP_LIST=()
     while IFS= read -r sw; do
-        local SIZE; SIZE=$(swapon --show --bytes --noheadings 2>/dev/null | grep "^$sw" | awk '{printf "%.0fMB", $3/1048576}')
+        local SIZE; SIZE=$(swap_active_list | awk -F'\t' -v name="$sw" '$1 == name { printf "%.0fMB", $3 / 1024 }')
         echo -e "  ${GREEN}[$i]${NC} ${BOLD}${sw}${NC}  ${SIZE}"
         SWAP_LIST+=("$sw")
         i=$((i+1))

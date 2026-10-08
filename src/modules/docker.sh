@@ -142,14 +142,33 @@ docker_compose_basename() {
     esac
 }
 
+# 默认部署目录按项目区分：所有项目共用 /opt/docker-compose 时，同名文件会被覆盖，
+# Compose 项目名（取自目录名）相同还会复用对方的同名服务和数据卷。
+docker_compose_project_name() {
+    local URL="$1" PATH_PART STEM NAME
+    PATH_PART=${URL%%\?*}
+    PATH_PART=${PATH_PART#*://}
+    STEM=${PATH_PART##*/}
+    STEM=${STEM%.*}
+    case "$STEM" in
+        ""|compose|docker-compose)
+            PATH_PART=${PATH_PART%/*}
+            STEM=${PATH_PART##*/} ;;
+    esac
+    NAME=$(printf '%s' "$STEM" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-' | sed -e 's/^-*//' -e 's/-*$//')
+    printf '%s\n' "${NAME:-app}"
+}
+
 docker_compose_fetch_and_deploy() {
     local URL DEST_DIR FILE TMP PREVIEW
     docker_require_ready || return
     docker_compose_available || { error "缺少 Docker Compose 插件"; return 1; }
     read -rp "$(ui_prompt '输入 Compose 文件 URL: ')" URL
     echo "$URL" | grep -qE '^https?://[^[:space:]]+$' || { error "URL 格式无效"; return 1; }
-    read -rp "$(ui_prompt '输入部署目录（默认 /opt/docker-compose）: ')" DEST_DIR
-    DEST_DIR=${DEST_DIR:-/opt/docker-compose}
+    local DEFAULT_DIR OVERWRITE_NOTE="新文件"
+    DEFAULT_DIR="/opt/docker-compose/$(docker_compose_project_name "$URL")"
+    read -rp "$(ui_prompt "输入部署目录（默认 ${DEFAULT_DIR}）: ")" DEST_DIR
+    DEST_DIR=${DEST_DIR:-$DEFAULT_DIR}
     mkdir -p "$DEST_DIR" || { error "无法创建目录：$DEST_DIR"; return 1; }
     FILE=$(docker_compose_basename "$URL")
     TMP=$(mktemp "${TMPDIR:-/tmp}/compose-file.XXXXXX") || return 1
@@ -167,9 +186,21 @@ docker_compose_fetch_and_deploy() {
     echo ""
     echo "$PREVIEW" | sed 's/^/  /'
     echo ""
-    if ! confirm_change_preview "部署 Compose 文件" "来源：$URL" "目标目录：$DEST_DIR" "保存为：$FILE"; then
+    if [ -e "$DEST_DIR/$FILE" ]; then
+        OVERWRITE_NOTE="覆盖已有文件（原文件备份为 ${FILE}.bak.*）"
+        warn "目标目录已有 ${FILE}，部署会替换它；同一目录的 Compose 项目会复用同名服务和数据卷"
+        if command -v diff >/dev/null 2>&1; then
+            diff -u "$DEST_DIR/$FILE" "$TMP" 2>/dev/null | sed -n '1,60p' | sed 's/^/  /' || true
+        fi
+    fi
+    if ! confirm_change_preview "部署 Compose 文件" "来源：$URL" "目标目录：$DEST_DIR" "保存为：$FILE（${OVERWRITE_NOTE}）"; then
         rm -f "$TMP"
         return
+    fi
+    if [ -e "$DEST_DIR/$FILE" ] && ! cp -p "$DEST_DIR/$FILE" "$DEST_DIR/${FILE}.bak.$(date +%Y%m%d_%H%M%S)"; then
+        rm -f "$TMP"
+        error "无法备份已有的 ${FILE}"
+        return 1
     fi
     if ! cp "$TMP" "$DEST_DIR/$FILE"; then
         rm -f "$TMP"

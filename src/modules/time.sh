@@ -232,6 +232,13 @@ ts_sync_https() {
     menu_div
     echo ""
 
+    # HTTP Date 头和 date +%s 都只到整秒，偏差在 2 秒内时改时反而会把准确的时钟往回拨。
+    local ABS_BEFORE=${DRIFT#-}
+    if [ "$ABS_BEFORE" -le 2 ]; then
+        info "本机时间偏差在 2 秒内，无需调整 ✓"
+        audit_action "HTTPS时间校验，${COUNT}个来源共识，偏差${DRIFT}秒，未调整" SUCCESS
+        return 0
+    fi
     if ! date -u -s "$TARGET_UTC" >/dev/null 2>&1; then
         error "设置系统时间失败，当前环境可能缺少改时权限"
         return 1
@@ -582,7 +589,13 @@ ts_sync_time() {
         info "尝试 chrony..."
         systemctl restart chronyd 2>/dev/null || rc-service chronyd restart 2>/dev/null || true
         sleep 1
-        chronyc makestep 2>/dev/null && info "chrony 强制同步成功 ✓" && SYNCED=true
+        # makestep 只要 chronyd 能连上就返回 0，即使没有任何可用时间源：必须确认已经选中时间源。
+        if chronyc makestep >/dev/null 2>&1 && ts_chrony_synced; then
+            info "chrony 强制同步成功 ✓"
+            SYNCED=true
+        else
+            warn "chrony 没有可用的时间源（UDP 123 可能被拦截），继续尝试其它方式"
+        fi
     fi
 
     # 方法3：ntpdate（直连 NTP 服务器）
@@ -628,29 +641,60 @@ ts_sync_time() {
     fi
 }
 
+ts_chrony_synced() {
+    local TRACKING REF LEAP
+    TRACKING=$(chronyc tracking 2>/dev/null) || return 1
+    REF=$(printf '%s\n' "$TRACKING" | awk -F': *' '/^Reference ID/ {print $2; exit}')
+    LEAP=$(printf '%s\n' "$TRACKING" | awk -F': *' '/^Leap status/ {print $2; exit}')
+    case "$REF" in ""|00000000*|7F7F0101*) return 1 ;; esac
+    [ "$LEAP" != "Not synchronised" ]
+}
+
+TS_ZONEINFO_DIR="${TS_ZONEINFO_DIR:-/usr/share/zoneinfo}"
+
+# 时区名只能是 zoneinfo 下的相对路径，且必须是真正的 TZif 文件（zone.tab 等也存在于该目录）。
+ts_zone_valid() {
+    local ZONE="$1"
+    case "$ZONE" in
+        ""|/*|*..*|*[!A-Za-z0-9_+./-]*) return 1 ;;
+    esac
+    [ -f "$TS_ZONEINFO_DIR/$ZONE" ] || return 1
+    [ "$(head -c 4 "$TS_ZONEINFO_DIR/$ZONE" 2>/dev/null)" = TZif ]
+}
+
+# 优先 timedatectl；它拒绝或不可用时改写 /etc/localtime，并以实际结果为准报告。
+ts_apply_timezone() {
+    local ZONE="$1"
+    if command -v timedatectl >/dev/null 2>&1 && timedatectl set-timezone "$ZONE" 2>/dev/null; then
+        info "时区已设置为 ${ZONE} ✓"
+        audit_action "设置时区 ${ZONE}" SUCCESS
+        return 0
+    fi
+    if ln -sf "$TS_ZONEINFO_DIR/$ZONE" /etc/localtime 2>/dev/null; then
+        printf '%s\n' "$ZONE" > /etc/timezone 2>/dev/null || true
+        info "时区已设置为 ${ZONE} ✓"
+        audit_action "设置时区 ${ZONE}" SUCCESS
+        return 0
+    fi
+    error "时区设置失败，请手动执行：timedatectl set-timezone ${ZONE}"
+    audit_action "设置时区 ${ZONE}" FAILED
+    return 1
+}
+
 # ── 设置北京时区 ──────────────────────────────────────────
 ts_set_beijing() {
     print_header "设置北京时区"
     info "设置时区为 Asia/Shanghai（北京 UTC+8）..."
 
-    if command -v timedatectl &>/dev/null; then
-        timedatectl set-timezone Asia/Shanghai 2>/dev/null && info "时区已设置 ✓"
-    elif [ -f /usr/share/zoneinfo/Asia/Shanghai ]; then
-        ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
-        echo "Asia/Shanghai" > /etc/timezone
-        info "时区已设置 ✓"
-    else
-        error "找不到时区文件，尝试安装 tzdata..."
-        pkg_install tzdata &>/dev/null
-        if [ -f /usr/share/zoneinfo/Asia/Shanghai ]; then
-            ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
-            echo "Asia/Shanghai" > /etc/timezone
-            info "时区已设置 ✓"
-        else
-            error "设置失败，请手动执行：timedatectl set-timezone Asia/Shanghai"
-            return
-        fi
+    if ! ts_zone_valid Asia/Shanghai; then
+        warn "找不到时区文件，尝试安装 tzdata..."
+        pkg_install tzdata &>/dev/null || true
     fi
+    if ! ts_zone_valid Asia/Shanghai; then
+        error "设置失败，请手动执行：timedatectl set-timezone Asia/Shanghai"
+        return 1
+    fi
+    ts_apply_timezone Asia/Shanghai || return 1
 
     echo ""
     info "当前时间：$(date '+%Y-%m-%d %H:%M:%S %Z %z')"
@@ -670,18 +714,11 @@ ts_set_custom_tz() {
     read -rp "  请输入时区名称（直接回车取消）: " TZ_INPUT
     [ -z "$TZ_INPUT" ] && { warn "已取消"; return; }
 
-    if [ ! -f "/usr/share/zoneinfo/${TZ_INPUT}" ]; then
-        error "时区 '${TZ_INPUT}' 不存在，请检查拼写"
-        return
+    if ! ts_zone_valid "$TZ_INPUT"; then
+        error "时区 '${TZ_INPUT}' 无效，请输入如 Asia/Shanghai 的时区名"
+        return 1
     fi
-
-    if command -v timedatectl &>/dev/null; then
-        timedatectl set-timezone "$TZ_INPUT" 2>/dev/null && info "时区已设置为 ${TZ_INPUT} ✓"
-    else
-        ln -sf "/usr/share/zoneinfo/${TZ_INPUT}" /etc/localtime
-        echo "$TZ_INPUT" > /etc/timezone
-        info "时区已设置为 ${TZ_INPUT} ✓"
-    fi
+    ts_apply_timezone "$TZ_INPUT" || return 1
 
     echo ""
     info "当前时间：$(date '+%Y-%m-%d %H:%M:%S %Z %z')"

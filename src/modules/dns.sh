@@ -182,6 +182,57 @@ dns_rollback_commands() {
     fi
 }
 
+DNS_RESOLVCONF_HEAD="${DNS_RESOLVCONF_HEAD:-/etc/resolvconf/resolv.conf.d/head}"
+DNS_DHCLIENT_CONF="${DNS_DHCLIENT_CONF:-/etc/dhcp/dhclient.conf}"
+
+# 在 head 中维护本工具的 nameserver 块（保留其它内容），然后让 resolvconf 重新生成。
+dns_debian_resolvconf_apply() {
+    local V4_LIST="$1" V6_LIST="$2" HAS_V6="$3" TMP
+    mkdir -p "$(dirname "$DNS_RESOLVCONF_HEAD")" || return 1
+    TMP=$(mktemp "${DNS_RESOLVCONF_HEAD}.tmp.XXXXXX") || return 1
+    {
+        [ ! -f "$DNS_RESOLVCONF_HEAD" ] || awk '
+            $0 == "# BEGIN VPS TOOLS DNS" { skip=1; next }
+            $0 == "# END VPS TOOLS DNS" { skip=0; next }
+            !skip { print }' "$DNS_RESOLVCONF_HEAD"
+        printf '%s\n' '# BEGIN VPS TOOLS DNS'
+        dns_expected_nameservers "$V4_LIST" "$V6_LIST" "$HAS_V6" | sed 's/^/nameserver /'
+        printf '%s\n' '# END VPS TOOLS DNS'
+    } > "$TMP" || { rm -f "$TMP"; return 1; }
+    chmod 644 "$TMP" && mv "$TMP" "$DNS_RESOLVCONF_HEAD" || { rm -f "$TMP"; return 1; }
+    resolvconf -d vps-tools >/dev/null 2>&1 || true
+    resolvconf -u
+}
+
+# head 模式下 DHCP 的 DNS 可能排在后面：只要求目标 DNS 依次排在最前（libc 最多用 3 个）。
+dns_resolv_nameservers_prefer() {
+    local RESOLV="$1" V4_LIST="$2" V6_LIST="$3" HAS_V6="$4" ACTUAL EXPECTED N
+    EXPECTED=$(dns_expected_nameservers "$V4_LIST" "$V6_LIST" "$HAS_V6" | head -3)
+    N=$(printf '%s\n' "$EXPECTED" | grep -c .)
+    ACTUAL=$(awk '/^[[:space:]]*nameserver[[:space:]]+/ { print $2 }' "$RESOLV" 2>/dev/null | head -"$N")
+    [ "$ACTUAL" = "$EXPECTED" ]
+}
+
+# dhclient 正在使用时，写入 supersede 让续租后的 resolv.conf 仍使用目标 IPv4 DNS。
+dns_dhclient_supersede() {
+    local V4_LIST="$1" TMP SERVERS
+    [ -f "$DNS_DHCLIENT_CONF" ] || return 1
+    pgrep -x dhclient >/dev/null 2>&1 || return 1
+    SERVERS=$(printf '%s' "$V4_LIST" | tr ' ' '\n' | awk 'NF' | paste -sd, - | sed 's/,/, /g')
+    [ -n "$SERVERS" ] || return 1
+    TMP=$(mktemp "${DNS_DHCLIENT_CONF}.tmp.XXXXXX") || return 1
+    {
+        awk '
+            $0 == "# BEGIN VPS TOOLS DNS" { skip=1; next }
+            $0 == "# END VPS TOOLS DNS" { skip=0; next }
+            !skip { print }' "$DNS_DHCLIENT_CONF"
+        printf '%s\n' '# BEGIN VPS TOOLS DNS'
+        printf 'supersede domain-name-servers %s;\n' "$SERVERS"
+        printf '%s\n' '# END VPS TOOLS DNS'
+    } > "$TMP" || { rm -f "$TMP"; return 1; }
+    chmod 644 "$TMP" && mv "$TMP" "$DNS_DHCLIENT_CONF" || { rm -f "$TMP"; return 1; }
+}
+
 dns_write() {
     local V4_LIST="$1"
     local V6_LIST="$2"
@@ -217,13 +268,15 @@ dns_write() {
             dns_resolvconf_apply "$RESOLV" "$V4_LIST" "$V6_LIST" "$HAS_V6" \
                 || { error "openresolv DNS 覆盖失败"; return 1; }
         else
-            BACKEND="resolvconf exclusive"
-            dns_expected_nameservers "$V4_LIST" "$V6_LIST" "$HAS_V6" \
-                | sed 's/^/nameserver /' \
-                | resolvconf -a vps-tools -x \
-                || { error "resolvconf 独占 DNS 覆盖失败"; return 1; }
+            # Debian 的 resolvconf 不支持 -x：接口记录排在 DHCP 记录之后，libc 又只用前 3 个 nameserver。
+            # 改写 head（始终排在最前），目标 DNS 就会优先使用。
+            BACKEND="resolvconf head"
+            dns_debian_resolvconf_apply "$V4_LIST" "$V6_LIST" "$HAS_V6" \
+                || { error "resolvconf DNS 写入失败"; return 1; }
         fi
     else
+        local STATIC_NOTE=""
+        # 以前加过不可变属性时先去掉；不再恢复它，否则系统和 DHCP 都无法再更新 DNS。
         chattr -i "$RESOLV" 2>/dev/null || true
         cp -a "$RESOLV" "${RESOLV}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
         local OTHER
@@ -235,10 +288,16 @@ dns_write() {
             error "无法写入 $RESOLV"
             return 1
         fi
+        # ifupdown + isc-dhcp-client 续租时会重写 resolv.conf：让 dhclient 使用同样的 DNS。
+        if dns_dhclient_supersede "$V4_LIST"; then
+            STATIC_NOTE="（已同步 dhclient，DHCP 续租不会改回）"
+        elif pgrep -x dhclient >/dev/null 2>&1 || pgrep -x udhcpc >/dev/null 2>&1; then
+            STATIC_NOTE="（注意：DHCP 客户端续租时可能改回原 DNS）"
+        fi
     fi
 
-    if { [ "$BACKEND" = "openresolv" ] || [ "$BACKEND" = "resolvconf exclusive" ]; } \
-        && ! dns_resolv_nameservers_match "$RESOLV" "$V4_LIST" "$V6_LIST" "$HAS_V6"; then
+    if { { [ "$BACKEND" = "openresolv" ] && ! dns_resolv_nameservers_match "$RESOLV" "$V4_LIST" "$V6_LIST" "$HAS_V6"; } \
+        || { [ "$BACKEND" = "resolvconf head" ] && ! dns_resolv_nameservers_prefer "$RESOLV" "$V4_LIST" "$V6_LIST" "$HAS_V6"; }; }; then
         error "DNS 后端未按目标覆盖，实际配置未改变"
         audit_action "DNS更新失败，后端 $BACKEND 未覆盖旧 nameserver" FAILED
         return 1
@@ -254,7 +313,7 @@ dns_write() {
         audit_action "DNS更新失败，后端 $BACKEND" FAILED
         return 1
     fi
-    info "DNS 已通过 $BACKEND 持久化更新 ✓"
+    info "DNS 已通过 $BACKEND 持久化更新 ✓${STATIC_NOTE:-}"
     audit_action "更新DNS，后端 $BACKEND" SUCCESS
     echo ""
     echo -e "  ${BOLD}更新后：${NC}"
