@@ -78,6 +78,15 @@ caddy_install() {
     caddy_post_install
 }
 
+# 通过 releases/latest 的跳转地址取得版本号，不依赖有频率限制的 GitHub API。
+caddy_latest_tag() {
+    local URL TAG
+    URL=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/caddyserver/caddy/releases/latest 2>/dev/null) || return 1
+    TAG=${URL##*/}
+    printf '%s\n' "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' || return 1
+    printf '%s\n' "$TAG"
+}
+
 # 二进制安装（通用回退）
 caddy_install_binary() {
     info "从 GitHub 下载 Caddy 二进制..."
@@ -89,11 +98,24 @@ caddy_install_binary() {
         *) error "不支持的架构：$ARCH"; return 1 ;;
     esac
 
-    local TMP; TMP=$(mktemp -d 2>/dev/null || { mkdir -p "/tmp/caddy_tmp_$$" && echo "/tmp/caddy_tmp_$$"; })
-    local URL="https://github.com/caddyserver/caddy/releases/latest/download/caddy_linux_${ARCH}.tar.gz"
+    local TMP; TMP=$(mktemp -d) || { error "无法创建临时目录"; return 1; }
+    # 资产名带版本号（caddy_2.x.y_linux_amd64.tar.gz）：先从 latest 跳转地址取版本，再用同版本的 SHA-512 清单校验。
+    local TAG VERSION ASSET BASE
+    TAG=$(caddy_latest_tag) || { rm -rf "$TMP"; error "无法获取 Caddy 最新版本号，请检查网络"; return 1; }
+    VERSION=${TAG#v}
+    ASSET="caddy_${VERSION}_linux_${ARCH}.tar.gz"
+    BASE="https://github.com/caddyserver/caddy/releases/download/${TAG}"
 
-    if curl -fsSL "$URL" -o "$TMP/caddy.tar.gz"; then
-        tar -xzf "$TMP/caddy.tar.gz" -C "$TMP" || { rm -rf "$TMP"; error "Caddy 压缩包解压失败"; return 1; }
+    if curl -fsSL "$BASE/$ASSET" -o "$TMP/$ASSET" \
+        && curl -fsSL "$BASE/caddy_${VERSION}_checksums.txt" -o "$TMP/checksums.txt"; then
+        if ! grep -E "[[:space:]]\*?${ASSET//./\\.}\$" "$TMP/checksums.txt" > "$TMP/asset.sha512" \
+            || ! (cd "$TMP" && sha512sum -c asset.sha512 >/dev/null 2>&1); then
+            rm -rf "$TMP"
+            error "Caddy ${VERSION} 校验和不匹配，已拒绝安装"
+            return 1
+        fi
+        info "Caddy ${VERSION} SHA-512 校验通过 ✓"
+        tar -xzf "$TMP/$ASSET" -C "$TMP" || { rm -rf "$TMP"; error "Caddy 压缩包解压失败"; return 1; }
         [ -f "$TMP/caddy" ] || { rm -rf "$TMP"; error "Caddy 压缩包缺少可执行文件"; return 1; }
         install -m 755 "$TMP/caddy" /usr/local/bin/caddy || { rm -rf "$TMP"; error "Caddy 安装失败"; return 1; }
         rm -rf "$TMP"
