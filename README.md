@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.13.9
+# VPS 开荒脚本 V3.13.10
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -16,7 +16,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 ### 离线安装包
 
-适合不能访问 GitHub 的中国内地 VPS。以下下载与当前脚本一致的 **V3.13.9** 离线包。每次脚本版本更新都会一并构建、校验和发布对应离线包，并同步本节的下载链接。
+适合不能访问 GitHub 的中国内地 VPS。以下下载与当前脚本一致的 **V3.13.10** 离线包。每次脚本版本更新都会一并构建、校验和发布对应离线包，并同步本节的下载链接。
 
 **方式一：中国内地 VPS 通过加速链接直接下载**
 
@@ -24,12 +24,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 ```bash
 cd /root
-curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.9/vps-tools-offline-V3.13.9.tar.gz
-curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.9/vps-tools-offline-V3.13.9.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.13.9.tar.gz.sha256
+curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.10/vps-tools-offline-V3.13.10.tar.gz
+curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.10/vps-tools-offline-V3.13.10.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.13.10.tar.gz.sha256
 ```
 
-也可以点击下载：[离线安装包（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.9/vps-tools-offline-V3.13.9.tar.gz) · [SHA256 校验文件（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.9/vps-tools-offline-V3.13.9.tar.gz.sha256)。
+也可以点击下载：[离线安装包（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.10/vps-tools-offline-V3.13.10.tar.gz) · [SHA256 校验文件（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.10/vps-tools-offline-V3.13.10.tar.gz.sha256)。
 
 > 加速服务由第三方提供，可用性取决于当地网络；若不可用，请使用下方直连下载后上传的方式。SHA256 用于完整性核验；包和校验文件都来自同一镜像时，不能独立证明来源可信，安全要求较高时应从 GitHub 或其他可信渠道另行获取校验值。校验失败时不要继续安装。
 
@@ -38,24 +38,24 @@ sha256sum -c vps-tools-offline-V3.13.9.tar.gz.sha256
 先在一台可以访问 GitHub 的电脑或跳板机下载：
 
 ```bash
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.9/vps-tools-offline-V3.13.9.tar.gz
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.9/vps-tools-offline-V3.13.9.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.13.9.tar.gz.sha256
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.10/vps-tools-offline-V3.13.10.tar.gz
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.10/vps-tools-offline-V3.13.10.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.13.10.tar.gz.sha256
 ```
 
 再通过 `scp`、SFTP 或 WinSCP 将两个文件传到 VPS。Linux/macOS 示例：
 
 ```bash
-scp vps-tools-offline-V3.13.9.tar.gz* root@你的VPS地址:/root/
+scp vps-tools-offline-V3.13.10.tar.gz* root@你的VPS地址:/root/
 ```
 
 方式一直接下载或方式二上传完成后，确认两个文件都在 VPS 的 `/root` 目录，登录 VPS 后离线安装：
 
 ```bash
 cd /root
-sha256sum -c vps-tools-offline-V3.13.9.tar.gz.sha256
-tar -xzf vps-tools-offline-V3.13.9.tar.gz
-cd vps-tools-offline-V3.13.9
+sha256sum -c vps-tools-offline-V3.13.10.tar.gz.sha256
+tar -xzf vps-tools-offline-V3.13.10.tar.gz
+cd vps-tools-offline-V3.13.10
 bash install.sh
 v
 ```
@@ -384,6 +384,7 @@ IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab �
 | 卸载 | 完整清理 |
 | Telegram 通知 | 配置 Bot + Chat ID，发测试消息 |
 | 替换分享链接地址 | 将已有节点中的 IP/主机替换为当前 IPv4、IPv6 或同域名双栈 DDNS 地址 |
+| 查看凭据 | 默认只显示首尾 4 位，确认后显示完整 Token / AK/SK；Cloudflare 可只读检测 Token 是否有效；凭据文件不是 600 时提示修复 |
 
 **状态显示：**
 - `运行中` — crontab 正常
@@ -723,6 +724,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.13.10** | DDNS 菜单新增「8 查看凭据」：默认打码显示已保存的 Cloudflare Token 或华为云 AK/SK，确认后才显示完整值；Cloudflare 可用只读请求检测 Token 是否有效、能否访问主域名；凭据文件权限不是 600 时给出修复命令；未安装但保留历史配置时同样可查看 |
 | **V3.13.9** | 零散问题收尾：SELinux 启用时改 SSH 端口前先用 semanage 放行（缺少时自动安装），OpenWrt + openssh 用 init 脚本重启 sshd；chrony 只有选中时间源才算同步成功，HTTPS 校时偏差在 2 秒内不再改时；时区必须是 zoneinfo 下真实的 TZif 文件，timedatectl 失败时回退并如实报告；Caddy 二进制回退下载改用带版本号的资产并校验 SHA-512；Compose 默认按项目分目录，覆盖已有文件前显示差异并备份；Debian resolvconf 改写 head（原先的 -x 无效），静态 DNS 同步写入 dhclient supersede；EL8 使用 PowerTools，恢复默认源时只启用原本启用的仓库，换源增加预览和审计；Swap 状态改读 /proc/swaps，兼容 BusyBox |
 | **V3.13.8** | DDNS：已存在的记录也会同步配置的代理（橙云）/ TTL，IP 不变时同样生效（开启代理时只比较代理开关）；更新改用 PATCH，不再清空记录备注和标签；Cloudflare API 出错或 Token 失效时如实记为查询失败，不再误报“记录不存在”，Zone 查询失败也写入状态；运行时拒绝内网 IPv4；OpenRC / OpenWrt 上的 cron 同时设为开机自启。监控告警：启用前确认本地执行脚本存在（缺失时自动安装）并检查 python3，安装失败不再显示“已启用”；定时任务带完整 PATH（RHEL 的 ip 在 /usr/sbin）；SSH 检查兼容 ssh.socket 和 dropbear，查不到服务状态时以实际监听为准，无法判断时不再误报严重告警；算不出流量周期起点时不再每次重置月流量。修改主机名时不再替换 localhost 等回环名 |
 | **V3.13.7** | Fail2ban：安装时把回环地址和当前 SSH 客户端 IP 加入 ignoreip（保留已有白名单），运行中改用 restart 并不再另起不受管理的 fail2ban-server，配置验证失败恢复原 jail.local；用户自行安装、没有 jail.local 时改 SSH 端口也会同步监控端口；编辑配置后先校验再重启。防火墙：放行 sshd 的全部端口和当前会话端口，菜单开启 ufw 前先放行；ufw 拉黑改为插到规则最前（原先追加在末尾，挡不住已放行端口）；firewalld 先布防再安装。NFT 转发：只伪装本工具 DNAT 的连接（ct mark），Docker 端口映射不再丢失客户端 IP；白名单只拦新连接；监听 IP 必须是合法本机地址；IPv6 目标不再接受 ::ffff: 映射地址；RHEL 系写入 /etc/sysconfig/nftables.conf。IPv4 优先：识别单空格规则，写入失败立即回滚，出口仍为 IPv6 时如实提示，musl 系统直接说明不支持。CI 新增 nft -c 语法校验 |

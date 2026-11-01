@@ -2740,6 +2740,121 @@ ddns_run_now() {
     rm -f "$RUN_MARK"
 }
 
+# ── 查看已保存的凭据 ──────────────────────────────────────
+# 只露出首尾各 4 位；12 位以内的值全部隐藏，避免掩码本身暴露大半内容。
+ddns_secret_mask() {
+    local value="$1"
+    if [ -z "$value" ]; then
+        printf '（空）'
+    elif [ "${#value}" -le 12 ]; then
+        printf '****（共 %s 位）' "${#value}"
+    else
+        printf '%s…%s（共 %s 位）' "${value:0:4}" "${value: -4}" "${#value}"
+    fi
+}
+
+ddns_credential_file() {
+    if [ "$(ddns_provider)" = "huawei" ]; then
+        echo "$DDNS_HUAWEI_KEY_FILE"
+    else
+        echo "$DDNS_TOKEN_FILE"
+    fi
+}
+
+ddns_file_mode() {
+    stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null
+}
+
+# 输出 valid / invalid / zone_missing / unknown。只读请求，不改动任何记录。
+ddns_cf_token_check() {
+    local token="$1" zone="$2" resp
+    resp=$(ddns_cf_curl "$token" -s --max-time 10 "https://api.cloudflare.com/client/v4/zones?name=${zone}") || { echo unknown; return 0; }
+    printf '%s' "$resp" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("unknown"); raise SystemExit
+if data.get("success"):
+    print("valid" if data.get("result") else "zone_missing")
+elif any(e.get("code") in (1000, 6003, 9109, 10000) for e in data.get("errors") or []):
+    print("invalid")
+else:
+    print("unknown")
+' 2>/dev/null || echo unknown
+}
+
+ddns_show_credentials() {
+    print_header "查看 DDNS 凭据"
+    local provider file mode token="" ak="" sk="" zone CH C
+    provider=$(ddns_provider)
+    file=$(ddns_credential_file)
+    if [ ! -f "$file" ]; then
+        warn "未找到凭据文件：${file}"
+        echo -e "  ${DIM}可通过「修改配置」重新填写凭据${NC}"
+        return 1
+    fi
+    mode=$(ddns_file_mode "$file")
+    echo -e "  服务商 : ${BOLD}$(ddns_provider_label)${NC}"
+    echo -e "  文件   : ${DIM}${file}${NC}"
+    if [ "$provider" = "huawei" ]; then
+        ak=$(grep '^AK=' "$file" | head -1 | cut -d= -f2-)
+        sk=$(grep '^SK=' "$file" | head -1 | cut -d= -f2-)
+        echo -e "  AK     : ${BOLD}$(ddns_secret_mask "$ak")${NC}"
+        echo -e "  SK     : ${BOLD}$(ddns_secret_mask "$sk")${NC}"
+    else
+        token=$(cat "$file")
+        echo -e "  Token  : ${BOLD}$(ddns_secret_mask "$token")${NC}"
+    fi
+    case "$mode" in
+        600|400) ;;
+        *) warn "凭据文件权限为 ${mode:-未知}，其他用户可能读取，建议执行：chmod 600 ${file}" ;;
+    esac
+
+    echo ""
+    menu_div
+    if [ "$provider" = "huawei" ]; then
+        menu_item "1" "显示完整 AK/SK" "$YELLOW"
+    else
+        menu_pair "1" "显示完整 Token" "2" "检测 Token 是否有效" "$YELLOW"
+    fi
+    menu_pair "0" "返回上级" "00" "退出脚本" "$RED" "$RED"
+    menu_div
+    echo ""
+    menu_read CH '选择操作: ' || return 0
+
+    case "$CH" in
+        1)
+            echo ""
+            warn "完整凭据会显示在屏幕上，请注意录屏、共享屏幕和终端日志"
+            read -rp "  确认显示？(y/N): " C
+            echo "$C" | grep -qiE '^y(es)?$' || { warn "已取消"; return 0; }
+            echo ""
+            if [ "$provider" = "huawei" ]; then
+                echo -e "  AK : ${BOLD}${ak}${NC}"
+                echo -e "  SK : ${BOLD}${sk}${NC}"
+            else
+                echo -e "  Token : ${BOLD}${token}${NC}"
+            fi
+            echo ""
+            echo -e "  ${DIM}服务商控制台不会再次显示原值，请妥善保存${NC}"
+            ;;
+        2)
+            [ "$provider" = "huawei" ] && { warn "无效选项"; return 0; }
+            zone=$(ddns_cfg_get ZONE 2>/dev/null || true)
+            [ -n "$zone" ] || { error "配置中缺少主域名（ZONE），无法检测"; return 1; }
+            info "正在用 Token 查询 ${zone}（只读，不会修改记录）..."
+            case "$(ddns_cf_token_check "$token" "$zone")" in
+                valid)        info "Token 有效，可访问 ${zone} ✓" ;;
+                zone_missing) warn "Token 有效，但看不到 ${zone}：请检查 Token 的区域范围是否包含该域名" ;;
+                invalid)      error "Token 无效、已过期或已被撤销，请到 Cloudflare 重新生成后「修改配置」" ;;
+                *)            warn "无法连接 Cloudflare API 或返回无法识别，请稍后再试" ;;
+            esac
+            ;;
+        *) warn "无效选项" ;;
+    esac
+}
+
 # ── DDNS 主菜单 ───────────────────────────────────────────
 ddns_menu() {
     while true; do
@@ -2837,6 +2952,7 @@ ddns_menu() {
         menu_div
         if [ "$D_ST" = "not_installed" ]; then
             menu_item "1" "开始安装并配置 DDNS"
+            [ -f "$DDNS_ZONE_FILE" ] && [ -f "$(ddns_credential_file)" ] && menu_item "8" "查看已保存的凭据"
             menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         else
             menu_pair "1" "立即更新" "2" "查看日志"
@@ -2848,7 +2964,7 @@ ddns_menu() {
             else
                 menu_pair "4" "恢复自动更新" "5" "卸载 DDNS" "$GREEN" "$YELLOW"
             fi
-            menu_item "7" "替换分享链接地址"
+            menu_pair "7" "替换分享链接地址" "8" "查看凭据"
             menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         fi
         menu_div
@@ -2858,6 +2974,11 @@ ddns_menu() {
         if [ "$D_ST" = "not_installed" ]; then
             case "$CH" in
                 1) ddns_install ;;
+                8) if [ -f "$DDNS_ZONE_FILE" ] && [ -f "$(ddns_credential_file)" ]; then
+                       ddns_show_credentials
+                   else
+                       warn "无效选项"; sleep 1; continue
+                   fi ;;
                 0) return ;;
                 00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1; continue ;;
@@ -2883,6 +3004,7 @@ ddns_menu() {
                 5) ddns_uninstall ;;
                 6) ddns_tg_config ;;
                 7) ddns_share_link_tool ;;
+                8) ddns_show_credentials ;;
                 0) return ;;
                 00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
                 *) warn "无效选项"; sleep 1; continue ;;
