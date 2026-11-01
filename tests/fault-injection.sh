@@ -419,6 +419,63 @@ EOF
     ! ddns_run_now >/dev/null 2>&1 || { echo "DDNS manual run accepted stale runtime config" >&2; exit 1; }
 )
 
+# Viewing saved DDNS credentials masks them unless the user confirms, and checks tokens read-only.
+(
+    CF_SECRET="cfTokenAbcd0123456789MiddlePartWxyz"
+    [ "$(ddns_secret_mask "$CF_SECRET")" = "cfTo…Wxyz（共 35 位）" ] || { echo "DDNS secret mask format is wrong" >&2; exit 1; }
+    [ "$(ddns_secret_mask short-secret)" = "****（共 12 位）" ] || { echo "DDNS secret mask exposed a short value" >&2; exit 1; }
+    DDNS_ZONE_FILE="$TMP/ddns-view-zone"
+    DDNS_TOKEN_FILE="$TMP/ddns-view-token"
+    DDNS_HUAWEI_KEY_FILE="$TMP/ddns-view-huawei"
+    printf 'PROVIDER=cloudflare\nZONE=example.com\n' > "$DDNS_ZONE_FILE"
+    printf '%s\n' "$CF_SECRET" > "$DDNS_TOKEN_FILE"
+    chmod 600 "$DDNS_TOKEN_FILE"
+    OUTPUT=$(ddns_show_credentials <<< "0" 2>&1)
+    grep -Fq 'cfTo…Wxyz' <<< "$OUTPUT" || { echo "DDNS credential view hid the masked token" >&2; exit 1; }
+    ! grep -Fq "$CF_SECRET" <<< "$OUTPUT" || { echo "DDNS credential view showed the token without confirmation" >&2; exit 1; }
+    ! grep -Fq 'chmod 600' <<< "$OUTPUT" || { echo "DDNS credential view warned about a 600 file" >&2; exit 1; }
+    OUTPUT=$(ddns_show_credentials <<< $'1\nn' 2>&1)
+    ! grep -Fq "$CF_SECRET" <<< "$OUTPUT" || { echo "DDNS credential view ignored a declined reveal" >&2; exit 1; }
+    OUTPUT=$(ddns_show_credentials <<< $'1\ny' 2>&1)
+    grep -Fq "$CF_SECRET" <<< "$OUTPUT" || { echo "DDNS credential view did not reveal a confirmed token" >&2; exit 1; }
+    chmod 644 "$DDNS_TOKEN_FILE"
+    OUTPUT=$(ddns_show_credentials <<< "0" 2>&1)
+    grep -Fq "chmod 600 $DDNS_TOKEN_FILE" <<< "$OUTPUT" || { echo "DDNS credential view hid a readable token file" >&2; exit 1; }
+
+    CF_REPLY='{"success":true,"result":[{"id":"zone1"}]}'
+    ddns_cf_curl() {
+        [ "$1" = "$CF_SECRET" ] || return 1
+        [[ "${*: -1}" = *"zones?name=example.com" ]] || return 1
+        printf '%s' "$CF_REPLY"
+    }
+    [ "$(ddns_cf_token_check "$CF_SECRET" example.com)" = valid ] || { echo "DDNS token check rejected a valid token" >&2; exit 1; }
+    CF_REPLY='{"success":true,"result":[]}'
+    [ "$(ddns_cf_token_check "$CF_SECRET" example.com)" = zone_missing ] || { echo "DDNS token check missed an out-of-scope zone" >&2; exit 1; }
+    CF_REPLY='{"success":false,"errors":[{"code":9109,"message":"Invalid access token"}]}'
+    [ "$(ddns_cf_token_check "$CF_SECRET" example.com)" = invalid ] || { echo "DDNS token check accepted a revoked token" >&2; exit 1; }
+    CF_REPLY='<html>bad gateway</html>'
+    [ "$(ddns_cf_token_check "$CF_SECRET" example.com)" = unknown ] || { echo "DDNS token check misread a non-JSON reply" >&2; exit 1; }
+    CF_REPLY='{"success":false,"errors":[{"code":9109}]}'
+    OUTPUT=$(ddns_show_credentials <<< "2" 2>&1)
+    grep -Fq 'Token 无效' <<< "$OUTPUT" || { echo "DDNS credential view hid an invalid token" >&2; exit 1; }
+
+    printf 'PROVIDER=huawei\nZONE=example.com\n' > "$DDNS_ZONE_FILE"
+    printf 'AK=HWAKID0123456789ABCD\nSK=HwSecretKey0123456789abcdefXYZ\n' > "$DDNS_HUAWEI_KEY_FILE"
+    chmod 600 "$DDNS_HUAWEI_KEY_FILE"
+    OUTPUT=$(ddns_show_credentials <<< "0" 2>&1)
+    grep -Fq 'HWAK…ABCD' <<< "$OUTPUT" && grep -Fq 'HwSe…fXYZ' <<< "$OUTPUT" \
+        || { echo "DDNS credential view hid the masked Huawei keys" >&2; exit 1; }
+    ! grep -Fq 'HwSecretKey0123456789abcdefXYZ' <<< "$OUTPUT" || { echo "DDNS credential view showed the Huawei SK without confirmation" >&2; exit 1; }
+    OUTPUT=$(ddns_show_credentials <<< $'1\ny' 2>&1)
+    grep -Fq 'HwSecretKey0123456789abcdefXYZ' <<< "$OUTPUT" || { echo "DDNS credential view did not reveal confirmed Huawei keys" >&2; exit 1; }
+
+    # A leftover config (DDNS not installed) still offers the view through menu option 8.
+    ddns_status() { echo not_installed; }
+    OUTPUT=$(ddns_menu <<< $'8\n0\n0' 2>&1)
+    grep -Fq '查看已保存的凭据' <<< "$OUTPUT" && grep -Fq 'HWAK…ABCD' <<< "$OUTPUT" \
+        || { echo "DDNS menu did not open the credential view" >&2; exit 1; }
+)
+
 # Pause and uninstall must preserve DDNS when crontab removal fails.
 (
     DDNS_SCRIPT="$TMP/ddns-preserve.sh"
