@@ -1,4 +1,4 @@
-# VPS 开荒脚本 V3.13.10
+# VPS 开荒脚本 V3.13.11
 
 > **银趴火山帮** 出品 · SSH · BBR · DDNS · Caddy · Firewall · NFT 转发
 
@@ -16,7 +16,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 ### 离线安装包
 
-适合不能访问 GitHub 的中国内地 VPS。以下下载与当前脚本一致的 **V3.13.10** 离线包。每次脚本版本更新都会一并构建、校验和发布对应离线包，并同步本节的下载链接。
+适合不能访问 GitHub 的中国内地 VPS。以下下载与当前脚本一致的 **V3.13.11** 离线包。每次脚本版本更新都会一并构建、校验和发布对应离线包，并同步本节的下载链接。
 
 **方式一：中国内地 VPS 通过加速链接直接下载**
 
@@ -24,12 +24,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 
 ```bash
 cd /root
-curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.10/vps-tools-offline-V3.13.10.tar.gz
-curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.10/vps-tools-offline-V3.13.10.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.13.10.tar.gz.sha256
+curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.11/vps-tools-offline-V3.13.11.tar.gz
+curl -fLO https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.11/vps-tools-offline-V3.13.11.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.13.11.tar.gz.sha256
 ```
 
-也可以点击下载：[离线安装包（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.10/vps-tools-offline-V3.13.10.tar.gz) · [SHA256 校验文件（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.10/vps-tools-offline-V3.13.10.tar.gz.sha256)。
+也可以点击下载：[离线安装包（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.11/vps-tools-offline-V3.13.11.tar.gz) · [SHA256 校验文件（加速）](https://gh-proxy.org/https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.11/vps-tools-offline-V3.13.11.tar.gz.sha256)。
 
 > 加速服务由第三方提供，可用性取决于当地网络；若不可用，请使用下方直连下载后上传的方式。SHA256 用于完整性核验；包和校验文件都来自同一镜像时，不能独立证明来源可信，安全要求较高时应从 GitHub 或其他可信渠道另行获取校验值。校验失败时不要继续安装。
 
@@ -38,24 +38,24 @@ sha256sum -c vps-tools-offline-V3.13.10.tar.gz.sha256
 先在一台可以访问 GitHub 的电脑或跳板机下载：
 
 ```bash
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.10/vps-tools-offline-V3.13.10.tar.gz
-curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.10/vps-tools-offline-V3.13.10.tar.gz.sha256
-sha256sum -c vps-tools-offline-V3.13.10.tar.gz.sha256
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.11/vps-tools-offline-V3.13.11.tar.gz
+curl -fLO https://github.com/chnnic/SSH-Hardening/releases/download/v3.13.11/vps-tools-offline-V3.13.11.tar.gz.sha256
+sha256sum -c vps-tools-offline-V3.13.11.tar.gz.sha256
 ```
 
 再通过 `scp`、SFTP 或 WinSCP 将两个文件传到 VPS。Linux/macOS 示例：
 
 ```bash
-scp vps-tools-offline-V3.13.10.tar.gz* root@你的VPS地址:/root/
+scp vps-tools-offline-V3.13.11.tar.gz* root@你的VPS地址:/root/
 ```
 
 方式一直接下载或方式二上传完成后，确认两个文件都在 VPS 的 `/root` 目录，登录 VPS 后离线安装：
 
 ```bash
 cd /root
-sha256sum -c vps-tools-offline-V3.13.10.tar.gz.sha256
-tar -xzf vps-tools-offline-V3.13.10.tar.gz
-cd vps-tools-offline-V3.13.10
+sha256sum -c vps-tools-offline-V3.13.11.tar.gz.sha256
+tar -xzf vps-tools-offline-V3.13.11.tar.gz
+cd vps-tools-offline-V3.13.11
 bash install.sh
 v
 ```
@@ -263,6 +263,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 - 本工具手动增强建议：TFO=`3`（客户端 + 服务端，需应用支持），ECN 主动启用时=`1`（入站 + 出站）并配合 fallback=`1`（异常回退），MTU=`1`（检测到黑洞后按需探测，不是关闭）。TFO、ECN 默认仍保留系统策略
 - “开启”表示内核配置允许，不代表每条连接已实际使用或一定提速。TFO 仍需要应用配合；ECN 需对端及链路兼容。取值含义见 [Linux 内核文档](https://kernel.org/doc/html/latest/networking/ip-sysctl.html)
 
+**conntrack 调优（BBR 菜单 → `c`）：**
+- 防火墙、NAT、NFT / iptables 转发和 Docker 会为每条连接占一个 conntrack 表项；表满后内核日志出现 `nf_conntrack: table full, dropping packet` 并直接丢弃新连接，网卡和 CPU 看起来都正常。新内核在 1GB 及以下内存时默认上限约为 内存MB×8（1GB 只有约 7680，2GB 也只有 65536）
+- 单独调整三项：`nf_conntrack_max` 按内存分档（1GB → 131072）、`established` 超时 2 小时（内核默认 5 天）、`time_wait` 30 秒；上限只升不降，超时只缩不延长
+- 写入 BBR 配置文件 `/etc/sysctl.d/99-vps-bbr.conf`，只替换 conntrack 三项、保留其余参数；记录首次基线，可用「还原 TCP 配置」恢复；开机预加载 `nf_conntrack` 并按 `max / 4` 设置哈希桶
+- NFT 转发和 iptables 本地转发在规则生效后（以及进入 NFT 菜单时）自动调用此功能；已是推荐值时不做任何改动
+- BBR 状态栏和 NFT 菜单显示 conntrack 使用率（如 `7480 / 7680（97%）`），超过 90% 或上限偏小时提示
+
 **诊断（BBR 菜单 → `8`）：**
 - 同时查看默认 qdisc 和 `tc -s qdisc` 显示的实际网卡队列；现代内核在其他队列下可使用 TCP 内部 pacing
 - 比较已保存与运行参数；按文件名优先级过滤被屏蔽的 sysctl 文件，列出重复/不同值的来源及行号（包括简单通配符线索），不修改其他配置
@@ -279,7 +286,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/chnnic/SSH-Hardening/refs/he
 - 通用核心含 UDP 缓冲（`udp_rmem_min/wmem_min`），优化 QUIC / Hysteria2 / TUIC；`tcp_notsent_lowat` 统一为 128KB（只限制未发送数据，不影响在途窗口）
 - 场景预设（中转/落地）额外扩大出站端口范围（10000-65535）并提高 `tcp_max_tw_buckets`；应用时把当前监听的 10000 以上端口加入 `ip_local_reserved_ports`，避免出站连接占用面板 / Hysteria 等服务端口（保留已有设置）
 - `fs.file-max` 只在原值低于 1048576 时提高；systemd 通常已设为极大值，不会被写死降低
-- 仅用户启用内核转发的中转预设写入 conntrack 参数，`nf_conntrack_max` 按 512MB / 1GB / 2GB / 4GB 内存分档；同时写入 `/etc/modules-load.d/` 开机预加载 `nf_conntrack`（否则开机时 sysctl 早于模块加载会被跳过），并按 `max / 4` 设置哈希桶
+- 中转 / 落地 / 线路落地预设都写入 conntrack 参数（默认预设仅在 conntrack 已加载时写入），取值同「conntrack 调优」；同时写入 `/etc/modules-load.d/` 开机预加载 `nf_conntrack`（否则开机时 sysctl 早于模块加载会被跳过），并按 `max / 4` 设置哈希桶
 - `vm.swappiness` 不再写入 BBR 网络配置，由 Swap 菜单管理；旧配置中的值在下次应用时移交 `/etc/sysctl.conf`
 - 应用后若默认网卡仍是 `fq_codel` / `pfifo_fast` / `mq` 默认子队列，提示立即切换为 `fq`（`default_qdisc` 只影响之后新建的队列）；限速规则与外部 QoS 不受影响
 - 应用场景预设后自动检测代理 service 的 `LimitNOFILE`，偏低时询问写入 drop-in
@@ -501,6 +508,7 @@ IP 真实变化时推送通知，实时读取 `/root/.cf_tg`，兼容 crontab �
 - VPS Tools 托管规则：`/etc/nftables.d/vps-tools-nftpf.nft`（仅包含 `nftpf_*` 表，事务应用）
 - 自动安装 nftables（apt / apk / yum / dnf）
 - 自动开启 IP 转发
+- 自动调整 conntrack（交给 BBR 模块，见 BBR「conntrack 调优」）：规则生效后以及进入 NFT 菜单时按内存调大上限、缩短超时并开机预加载，菜单显示当前使用率；iptables 本地转发同样生效
 - 服务自启：systemd / OpenRC 双支持
 
 ---
@@ -724,6 +732,7 @@ tests/smoke.sh
 
 | 版本 | 主要变更 |
 |------|---------|
+| **V3.13.11** | 修复 conntrack 表满丢包：NFT 转发和 iptables 本地转发此前从不调整 conntrack，新内核 1GB 内存默认上限仅约 7680，连接一多就 `table full, dropping packet`。BBR 菜单新增「c conntrack 调优」：按内存调大上限（1GB → 131072，只升不降）、established 超时缩短为 2 小时、time_wait 30 秒（只缩不延长），写入 BBR 配置并记录基线、开机预加载 `nf_conntrack`；NFT / iptables 转发规则生效后（以及进入 NFT 菜单时）自动调用。BBR 落地机、线路落地机和未开内核转发的中转机预设也会调整（此前只有中转机 + 内核转发才调整），默认预设在 conntrack 已加载时同样调整；BBR 与 NFT 菜单显示 conntrack 使用率并在接近满载时警告。升级后进入一次 NFT 菜单或在 BBR 菜单选 `c` 即可生效 |
 | **V3.13.10** | DDNS 菜单新增「8 查看凭据」：默认打码显示已保存的 Cloudflare Token 或华为云 AK/SK，确认后才显示完整值；Cloudflare 可用只读请求检测 Token 是否有效、能否访问主域名；凭据文件权限不是 600 时给出修复命令；未安装但保留历史配置时同样可查看 |
 | **V3.13.9** | 零散问题收尾：SELinux 启用时改 SSH 端口前先用 semanage 放行（缺少时自动安装），OpenWrt + openssh 用 init 脚本重启 sshd；chrony 只有选中时间源才算同步成功，HTTPS 校时偏差在 2 秒内不再改时；时区必须是 zoneinfo 下真实的 TZif 文件，timedatectl 失败时回退并如实报告；Caddy 二进制回退下载改用带版本号的资产并校验 SHA-512；Compose 默认按项目分目录，覆盖已有文件前显示差异并备份；Debian resolvconf 改写 head（原先的 -x 无效），静态 DNS 同步写入 dhclient supersede；EL8 使用 PowerTools，恢复默认源时只启用原本启用的仓库，换源增加预览和审计；Swap 状态改读 /proc/swaps，兼容 BusyBox |
 | **V3.13.8** | DDNS：已存在的记录也会同步配置的代理（橙云）/ TTL，IP 不变时同样生效（开启代理时只比较代理开关）；更新改用 PATCH，不再清空记录备注和标签；Cloudflare API 出错或 Token 失效时如实记为查询失败，不再误报“记录不存在”，Zone 查询失败也写入状态；运行时拒绝内网 IPv4；OpenRC / OpenWrt 上的 cron 同时设为开机自启。监控告警：启用前确认本地执行脚本存在（缺失时自动安装）并检查 python3，安装失败不再显示“已启用”；定时任务带完整 PATH（RHEL 的 ip 在 /usr/sbin）；SSH 检查兼容 ssh.socket 和 dropbear，查不到服务状态时以实际监听为准，无法判断时不再误报严重告警；算不出流量周期起点时不再每次重置月流量。修改主机名时不再替换 localhost 等回环名 |

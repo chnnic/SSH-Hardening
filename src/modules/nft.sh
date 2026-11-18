@@ -179,6 +179,13 @@ nft_persist_forward() {
     mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
 }
 
+# DNAT / REDIRECT 的每条连接都占一个 conntrack 表项，内核默认上限很小（1GB 内存约 7680），
+# 表满后新连接直接丢包。调整统一交给 BBR 模块（同一份 sysctl 配置、基线与还原）。
+nft_ensure_conntrack() {
+    declare -F bbr_conntrack_tune >/dev/null || return 0
+    bbr_conntrack_tune auto
+}
+
 # 只开启规则所需协议族的转发，并且先确认。开启 IPv6 转发时内核会丢弃 accept_ra=1 网卡上
 # 由 RA 学到的默认路由，所以先把这些网卡设为 accept_ra=2，避免 IPv6 SSH 断开。
 nft_prepare_ip_forward() {
@@ -522,6 +529,7 @@ nft_write_and_apply() {
         rc-update add nftables default 2>/dev/null || warn "nftables 开机自启设置失败"
     fi
     info "nftables 配置已应用 ✓"
+    if grep -q '^[0-9]' "$NFT_RULES_FILE" 2>/dev/null; then nft_ensure_conntrack || true; fi
 }
 
 # ── 规则展示 ──────────────────────────────────────────────
@@ -1231,6 +1239,7 @@ iptpf_add() {
         fi
         info "已添加: ${src} → ${dst} (${p}) ✓"
     done
+    [ ! -s "$IPTPF_RULES_FILE" ] || nft_ensure_conntrack || true
 
     iptpf_persist || warn "当前系统未提供 iptables 持久化后端，规则仅在本次启动有效"
 }
@@ -1340,6 +1349,10 @@ iptpf_menu() {
 nft_menu() {
     local ch=""
     nft_ensure_state_dir
+    # 旧版本建立的转发规则没有调整过 conntrack：进入菜单时补上，避免继续丢包。
+    if command -v nft &>/dev/null && grep -q '^[0-9]' "$NFT_RULES_FILE" 2>/dev/null; then
+        nft_ensure_conntrack || true
+    fi
 
     while true; do
         local rule_count
@@ -1370,6 +1383,7 @@ nft_menu() {
             active)  echo -e "  DDNS 定时刷新 : ${GREEN}${BOLD}运行中${NC}" ;;
             *)       echo -e "  DDNS 定时刷新 : ${DIM}未启用${NC}" ;;
         esac
+        ! declare -F bbr_conntrack_status_line >/dev/null || BBR_PROC_SYS="$NFT_PROC_SYS" bbr_conntrack_status_line "添加或修改转发规则后会自动调整，也可在 BBR 菜单「c」手动调整"
 
         # 显示规则列表（不超过 10 条）
         if [ "$rule_count" -gt 0 ]; then
