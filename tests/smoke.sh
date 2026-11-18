@@ -199,7 +199,7 @@ BANNER_COMPACT=$(COLUMNS=60 NO_COLOR=1 volcano_art_banner)
 [[ "$(COLUMNS=40 NO_COLOR=1 volcano_art_banner)" = *'IMPART OPS'* ]] || { echo "Narrow IMPART OPS banner fallback is missing" >&2; exit 1; }
 
 for fn in bbr_preflight bbr_runtime_snapshot bbr_ensure_baseline bbr_restore_runtime_snapshot bbr_baseline_value bbr_config_has_key bbr_config_value \
-    bbr_apply_sysctl bbr_generate_config bbr_physical_memory_mb bbr_effective_memory_mb bbr_buffer_cap_bytes bbr_buffer_bytes bbr_conntrack_max_for_memory bbr_bdp_mb bbr_recommend_profile \
+    bbr_apply_sysctl bbr_generate_config bbr_physical_memory_mb bbr_effective_memory_mb bbr_buffer_cap_bytes bbr_buffer_bytes bbr_conntrack_max_for_memory bbr_conntrack_wanted bbr_conntrack_target bbr_conntrack_status_line nft_ensure_conntrack bbr_conntrack_tune bbr_conntrack_menu bbr_conntrack_config bbr_bdp_mb bbr_recommend_profile \
     bbr_tc_qdisc_safe_to_replace bbr_tc_current_rate bbr_tc_owned_rate bbr_tc_saved_values bbr_tc_saved_rate_display bbr_tc_rate_display \
     bbr_tc_topology_matches bbr_tc_managed_artifact bbr_tc_is_legacy_owned bbr_tc_persistence_current bbr_tc_reconcile_saved \
     bbr_tc_snapshot_foreign bbr_tc_force_confirm bbr_tc_remove_confirm bbr_tc_apply_runtime bbr_default_route_info bbr_route_token \
@@ -340,6 +340,7 @@ EOF
     # shellcheck disable=SC2329 # test stub used indirectly by bbr_generate_config
     bbr_default_ipv6_iface() { echo eth0; }
     bbr_physical_memory_mb() { echo 512; }
+    bbr_conntrack_current() { return 1; }
     CONFIG=$(bbr_generate_config 12582912 12582912 relay 0)
     grep -qx 'net.ipv4.tcp_rmem = 4096 131072 12582912' <<< "$CONFIG" || { echo "BBR receive defaults are unsafe" >&2; exit 1; }
     grep -qx 'net.ipv4.tcp_wmem = 4096 16384 12582912' <<< "$CONFIG" || { echo "BBR send defaults are unsafe" >&2; exit 1; }
@@ -347,7 +348,7 @@ EOF
     ! grep -qE '^(vm\.min_free_kbytes|net\.ipv4\.(tcp_mem|tcp_adv_win_scale|tcp_tw_reuse|tcp_fin_timeout|tcp_keepalive_time|tcp_ecn|tcp_slow_start_after_idle|tcp_fastopen_blackhole_timeout_sec))[[:space:]]*=' <<< "$CONFIG" \
         || { echo "BBR generated retired or risky TCP settings" >&2; exit 1; }
     ! grep -qE '^net\.ipv4\.ip_forward[[:space:]]*=' <<< "$CONFIG" || { echo "BBR enabled forwarding without consent" >&2; exit 1; }
-    ! grep -qE '^net\.netfilter\.nf_conntrack_max[[:space:]]*=' <<< "$CONFIG" || { echo "BBR tuned conntrack while forwarding was disabled" >&2; exit 1; }
+    grep -qx 'net.netfilter.nf_conntrack_max = 131072' <<< "$CONFIG" || { echo "BBR relay preset without forwarding left conntrack at the kernel default" >&2; exit 1; }
 
     CONFIG=$(bbr_generate_config 12582912 12582912 relay 1)
     grep -qx 'net.ipv6.conf.default.accept_ra = 2' <<< "$CONFIG" || { echo "BBR forwarding profile missing default IPv6 accept_ra=2" >&2; exit 1; }
@@ -401,6 +402,7 @@ bbr_uint_greater 9223372036854775807 1048576 && ! bbr_uint_greater 1048576 92233
     BBR_MODULES_LOAD_FILE="$TMP/conntrack-ml/vps-tools-conntrack.conf"
     BBR_MODPROBE_FILE="$TMP/conntrack-mp/vps-tools-conntrack.conf"
     BBR_CONNTRACK_HASHSIZE="$TMP/conntrack-hashsize"
+    NFT_SYSCTL_FILE="$TMP/conntrack-nft-none.conf"
     : > "$BBR_CONNTRACK_HASHSIZE"
     info() { :; }; warn() { :; }
     printf 'net.netfilter.nf_conntrack_max = 262144\n' > "$SYSCTL_FILE"

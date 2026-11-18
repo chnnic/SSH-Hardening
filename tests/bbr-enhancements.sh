@@ -679,4 +679,66 @@ fixture mq_children
     [ "$(cat "$TC_LOG")" = 'qdisc replace dev eth0 parent :1 fq' ] || fail "mq refresh touched non-default children: $(cat "$TC_LOG")"
 )
 
+# conntrack: every scene preset (and any profile while conntrack is loaded) is sized by memory and never
+# lowered; the status shows a nearly full table; NFT's persisted limit keeps the boot preload alive.
+fixture conntrack
+(
+    bbr_physical_memory_mb() { echo 960; }
+    CT="$(bbr_sysctl_path net.netfilter.nf_conntrack_max)"
+    rm -rf "$BBR_PROC_SYS/net/netfilter"
+    CONFIG=$(bbr_generate_config 12582912 12582912 default 0)
+    ! grep -q '^net\.netfilter\.' <<< "$CONFIG" || fail 'default profile tuned an unused conntrack'
+    CONFIG=$(bbr_generate_config 12582912 12582912 landing 0)
+    grep -qx 'net.netfilter.nf_conntrack_max = 131072' <<< "$CONFIG" || fail 'landing preset left conntrack at the kernel default'
+    grep -qx 'net.netfilter.nf_conntrack_tcp_timeout_established = 7200' <<< "$CONFIG" || fail 'landing preset kept the 5-day established timeout'
+    CONFIG=$(bbr_generate_config 12582912 12582912 relay 0)
+    grep -qx 'net.netfilter.nf_conntrack_max = 131072' <<< "$CONFIG" || fail 'relay without kernel forwarding skipped conntrack'
+    mkdir -p "$(dirname "$CT")"
+    printf '7680\n' > "$CT"
+    printf '7480\n' > "$(bbr_sysctl_path net.netfilter.nf_conntrack_count)"
+    CONFIG=$(bbr_generate_config 12582912 12582912 default 0)
+    grep -qx 'net.netfilter.nf_conntrack_max = 131072' <<< "$CONFIG" || fail 'default profile ignored a loaded conntrack'
+    OUTPUT=$(bbr_conntrack_status_line 2>&1)
+    grep -Fq '7480 / 7680（97%）' <<< "$OUTPUT" || fail "conntrack usage missing: $OUTPUT"
+    grep -Fq 'table full' <<< "$OUTPUT" && grep -Fq '推荐 131072' <<< "$OUTPUT" || fail "full conntrack table not flagged: $OUTPUT"
+    printf '2000000\n' > "$CT"
+    CONFIG=$(bbr_generate_config 12582912 12582912 landing 0)
+    grep -qx 'net.netfilter.nf_conntrack_max = 2000000' <<< "$CONFIG" || fail 'conntrack limit was lowered'
+    ! grep -Fq '推荐' <<< "$(bbr_conntrack_status_line 2>&1)" || fail 'large conntrack limit still flagged'
+
+    # Standalone tuning (BBR menu "c", also called by NFT / iptables forwarding) replaces only the
+    # conntrack lines, records the baseline, preloads the module, and is a no-op once applied.
+    BBR_MODULES_LOAD_FILE="$TEST_CASE/modules-load/vps-tools-conntrack.conf"
+    BBR_MODPROBE_FILE="$TEST_CASE/modprobe/vps-tools-conntrack.conf"
+    BBR_CONNTRACK_HASHSIZE="$TEST_CASE/hashsize"
+    : > "$BBR_CONNTRACK_HASHSIZE"
+    ensure_conntrack_module() { return 0; }
+    EST="$(bbr_sysctl_path net.netfilter.nf_conntrack_tcp_timeout_established)"
+    TW="$(bbr_sysctl_path net.netfilter.nf_conntrack_tcp_timeout_time_wait)"
+    printf '7680\n' > "$CT"
+    printf '432000\n' > "$EST"
+    printf '120\n' > "$TW"
+    cp "$TEST_CASE/original.conf" "$SYSCTL_FILE"
+    OUTPUT=$(bbr_conntrack_tune auto 2>&1) || fail "standalone conntrack tuning failed: $OUTPUT"
+    grep -Fq '上限 131072，established 7200 秒，time_wait 30 秒' <<< "$OUTPUT" || fail "conntrack tuning summary missing: $OUTPUT"
+    [ "$(cat "$CT")" = 131072 ] && [ "$(cat "$EST")" = 7200 ] && [ "$(cat "$TW")" = 30 ] || fail 'conntrack runtime values not applied'
+    grep -qx 'net.ipv4.tcp_congestion_control = cubic' "$SYSCTL_FILE" || fail 'conntrack tuning dropped other BBR settings'
+    grep -qx 'net.netfilter.nf_conntrack_max = 131072' "$SYSCTL_FILE" \
+        && grep -qx 'net.netfilter.nf_conntrack_tcp_timeout_established = 7200' "$SYSCTL_FILE" \
+        && grep -qx 'net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30' "$SYSCTL_FILE" || fail 'conntrack tuning not persisted'
+    [ "$(bbr_baseline_value net.netfilter.nf_conntrack_max)" = 7680 ] || fail 'conntrack baseline not recorded for restore'
+    grep -qx nf_conntrack "$BBR_MODULES_LOAD_FILE" && grep -qx 'options nf_conntrack hashsize=32768' "$BBR_MODPROBE_FILE" \
+        && [ "$(cat "$BBR_CONNTRACK_HASHSIZE")" = 32768 ] || fail 'conntrack tuning has no boot preload or hashsize'
+    [ -z "$(bbr_conntrack_tune auto 2>&1)" ] || fail 'repeated conntrack tuning is not a no-op'
+    printf '600\n' > "$EST"
+    OUTPUT=$(printf 'y\n' | bbr_conntrack_menu 2>&1) || fail "conntrack menu failed: $OUTPUT"
+    [ "$(cat "$EST")" = 600 ] && grep -qx 'net.netfilter.nf_conntrack_tcp_timeout_established = 600' "$SYSCTL_FILE" \
+        || fail 'conntrack tuning lengthened a shorter timeout'
+    [ "$(grep -c '^net\.netfilter\.nf_conntrack_max' "$SYSCTL_FILE")" = 1 ] && [ "$(grep -c '^# ── conntrack' "$SYSCTL_FILE")" = 1 ] \
+        || fail 'conntrack tuning duplicated its block'
+    printf '200000\n' > "$CT"
+    printf 'n\n' | bbr_conntrack_menu >/dev/null 2>&1
+    [ "$(cat "$CT")" = 200000 ] || fail 'declined conntrack menu still applied'
+)
+
 echo 'BBR enhancement and transaction tests passed.'

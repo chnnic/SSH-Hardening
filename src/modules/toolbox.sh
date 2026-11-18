@@ -8,7 +8,7 @@ config_backup_allowed_roots() {
         etc/hostname etc/hosts \
         etc/ssh/sshd_config etc/ssh/sshd_config.d root/.ssh/authorized_keys \
         etc/fail2ban etc/ufw etc/firewalld etc/nftables.conf etc/sysconfig/nftables.conf etc/nftables.d/vps-tools-nftpf.nft etc/nft-port-forward \
-        etc/sysctl.conf etc/sysctl.d/99-vps-bbr.conf etc/sysctl.d/99-ipv6-disable.conf etc/sysctl.d/99-vps-nftpf-forward.conf etc/sysctl.d/99-vps-swappiness.conf \
+        etc/sysctl.conf etc/sysctl.d/99-vps-bbr.conf etc/sysctl.d/99-ipv6-disable.conf etc/sysctl.d/99-vps-nftpf-forward.conf etc/sysctl.d/99-vps-swappiness.conf etc/modules-load.d/vps-tools-conntrack.conf etc/modprobe.d/vps-tools-conntrack.conf \
         etc/gai.conf etc/resolv.conf etc/resolvconf.conf etc/systemd/resolved.conf etc/systemd/resolved.conf.d \
         etc/NetworkManager/conf.d etc/NetworkManager/system-connections etc/resolvconf/resolv.conf.d etc/dhcp/dhclient.conf \
         etc/caddy root/ddns.sh root/.cf_token root/.hw_dns_aksk root/.cf_zone root/.cf_tg root/.cf_last_change \

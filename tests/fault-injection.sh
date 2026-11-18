@@ -1030,6 +1030,28 @@ self_reconcile_tc_after_update >/dev/null \
         || { echo "Forwarding settings were not persisted" >&2; exit 1; }
 )
 
+# NFT forwarding hands conntrack tuning to the BBR module once rules are applied.
+(
+    info() { :; }; warn() { :; }
+    NFT_STATE_DIR="$TMP/ct-nft"
+    NFT_RULES_FILE="$NFT_STATE_DIR/rules.db"
+    NFT_MANAGED_FILE="$TMP/ct-nft-managed/vps-tools-nftpf.nft"
+    NFT_CONFIG_FILE="$TMP/ct-nft-main.conf"
+    mkdir -p "$NFT_STATE_DIR"
+    printf '1|ipv4||10080|10080|ip|192.0.2.10|192.0.2.10|80|80|single\n' > "$NFT_RULES_FILE"
+    nft() { return 0; }
+    nft_generate_config() { echo 'table ip nftpf_nat {}'; }
+    nft_main_config_prepare() { return 0; }
+    systemd_available() { return 1; }
+    bbr_conntrack_tune() { echo "tune:$*" >> "$TMP/ct-calls"; }
+    nft_write_and_apply >/dev/null || { echo "NFT apply stub failed" >&2; exit 1; }
+    grep -qx 'tune:auto' "$TMP/ct-calls" || { echo "NFT forwarding did not tune conntrack" >&2; exit 1; }
+    rm -f "$TMP/ct-calls"
+    : > "$NFT_RULES_FILE"
+    nft_write_and_apply >/dev/null || { echo "NFT apply stub failed without rules" >&2; exit 1; }
+    [ ! -e "$TMP/ct-calls" ] || { echo "NFT tuned conntrack without any forwarding rule" >&2; exit 1; }
+)
+
 # Rollback removes config files that appeared after the snapshot, and never runs on an unreadable snapshot.
 (
     FAKE="$TMP/fake-root"

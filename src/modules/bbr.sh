@@ -668,6 +668,27 @@ bbr_print_status() {
         [ "$WMEM_MB" -gt $(( MEM_TOTAL_MB / 4 )) ] && WMEM_COLOR="${YELLOW}${BOLD}"
     fi
     echo -e "  ${CYAN}缓冲${NC} rmem ${RMEM_COLOR}${RMEM_MB}MB${NC}  wmem ${WMEM_COLOR}${WMEM_MB}MB${NC}  tcp_r ${BOLD}${TCP_RMEM_MB}MB${NC}  tcp_w ${BOLD}${TCP_WMEM_MB}MB${NC}  ${DIM}物理内存 ${MEM_TOTAL_MB}MB${NC}"
+    bbr_conntrack_status_line
+}
+
+# conntrack 表满时内核直接丢新连接的包，网卡和 CPU 看起来都正常，最难排查。
+bbr_conntrack_status_line() {
+    local HINT="${1:-应用任一场景预设即可调整}" MAX COUNT PCT COLOR="$BOLD" TARGET
+    MAX=$(bbr_conntrack_current 2>/dev/null) || return 0
+    [ "$MAX" -gt 0 ] || return 0
+    COUNT=$(cat "$(bbr_sysctl_path net.netfilter.nf_conntrack_count)" 2>/dev/null || echo 0)
+    case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
+    PCT=$(( COUNT * 100 / MAX ))
+    [ "$PCT" -lt 70 ] || COLOR="${YELLOW}${BOLD}"
+    [ "$PCT" -lt 90 ] || COLOR="${RED}${BOLD}"
+    echo -e "  ${CYAN}conntrack${NC} ${COLOR}${COUNT} / ${MAX}（${PCT}%）${NC}"
+    TARGET=$(bbr_conntrack_max_for_memory "$(bbr_physical_memory_mb)")
+    if [ "$PCT" -ge 90 ]; then
+        warn "conntrack 表接近满载，新连接会被丢包（dmesg: nf_conntrack: table full）"
+    fi
+    if bbr_uint_greater "$TARGET" "$MAX"; then
+        echo -e "  ${YELLOW}conntrack 上限偏小（推荐 ${TARGET}），${HINT}${NC}"
+    fi
 }
 
 # ── 备份 sysctl ───────────────────────────────────────────
@@ -1784,6 +1805,124 @@ bbr_conntrack_max_for_memory() {
     fi
 }
 
+bbr_conntrack_in_use() {
+    [ -e "$(bbr_sysctl_path net.netfilter.nf_conntrack_max)" ]
+}
+
+# 只要防火墙 / NAT / Docker 加载了 conntrack，每条连接都会占表项；新内核在 1GB 及以下
+# 内存时默认上限只有约 内存MB×8（1GB ≈ 7680），代理机很容易打满并丢包，不能只在中转 + 内核转发时调整。
+bbr_conntrack_wanted() {
+    local PROFILE_NAME="$1" ENABLE_FORWARD="${2:-0}"
+    case "$PROFILE_NAME" in relay|landing|line_landing) return 0 ;; esac
+    [ "$ENABLE_FORWARD" = 1 ] || bbr_conntrack_in_use
+}
+
+bbr_conntrack_current() {
+    local VALUE
+    VALUE=$(cat "$(bbr_sysctl_path net.netfilter.nf_conntrack_max)" 2>/dev/null) || return 1
+    case "$VALUE" in ''|*[!0-9]*) return 1 ;; esac
+    echo "$VALUE"
+}
+
+# 按内存分档，只升不降：当前已更大（手动或其他程序设置）时沿用当前值。
+bbr_conntrack_target() {
+    local TARGET CURRENT
+    TARGET=$(bbr_conntrack_max_for_memory "$(bbr_physical_memory_mb)")
+    CURRENT=$(bbr_conntrack_current 2>/dev/null || true)
+    ! bbr_uint_greater "$CURRENT" "$TARGET" || TARGET="$CURRENT"
+    echo "$TARGET"
+}
+
+BBR_CONNTRACK_HEADING="# ── conntrack（按物理内存分档，只升不降）──"
+BBR_CONNTRACK_EST_TIMEOUT=7200
+BBR_CONNTRACK_TW_TIMEOUT=30
+
+# 超时只缩不延长：内核默认 established 长达 5 天，断线客户端的表项会一直占位；
+# 已手动设得更短的值保留。
+bbr_conntrack_timeout() {
+    local KEY="$1" LIMIT="$2" VALUE
+    VALUE=$(cat "$(bbr_sysctl_path "$KEY")" 2>/dev/null || true)
+    case "$VALUE" in ''|*[!0-9]*|0) VALUE="$LIMIT" ;; esac
+    ! bbr_uint_greater "$VALUE" "$LIMIT" || VALUE="$LIMIT"
+    echo "$VALUE"
+}
+
+bbr_conntrack_config() {
+    printf '%s\n' \
+        "net.netfilter.nf_conntrack_max = $(bbr_conntrack_target)" \
+        "net.netfilter.nf_conntrack_tcp_timeout_established = $(bbr_conntrack_timeout net.netfilter.nf_conntrack_tcp_timeout_established "$BBR_CONNTRACK_EST_TIMEOUT")" \
+        "net.netfilter.nf_conntrack_tcp_timeout_time_wait = $(bbr_conntrack_timeout net.netfilter.nf_conntrack_tcp_timeout_time_wait "$BBR_CONNTRACK_TW_TIMEOUT")"
+}
+
+# 已持久化、运行值一致且开机预加载就绪时无需重复事务（NFT 每次刷新规则都会调用）。
+bbr_conntrack_applied() {
+    local CONFIG="$1" LINES="$2" KEY VALUE
+    [ -f "$BBR_MODULES_LOAD_FILE" ] || return 1
+    while IFS='=' read -r KEY VALUE; do
+        KEY=$(printf '%s' "$KEY" | awk '{$1=$1; print}')
+        VALUE=$(printf '%s' "$VALUE" | awk '{$1=$1; print}')
+        [ "$(bbr_config_value "$CONFIG" "$KEY" 2>/dev/null)" = "$VALUE" ] || return 1
+        [ "$(cat "$(bbr_sysctl_path "$KEY")" 2>/dev/null)" = "$VALUE" ] || return 1
+    done <<< "$LINES"
+}
+
+# 单独调整 conntrack：BBR 菜单与 NFT / iptables 转发共用。只替换现有 BBR 配置中的
+# conntrack 三项，其余参数、基线与还原流程不变。auto 模式只在失败时输出详情。
+bbr_conntrack_tune() {
+    local MODE="${1:-}" CONFIG="" ORIGINAL LINES KEYS OUTPUT
+    ensure_conntrack_module >/dev/null 2>&1 || true
+    if ! bbr_conntrack_in_use; then
+        [ "$MODE" = auto ] && return 0
+        warn "无法加载 nf_conntrack（容器或内核不支持），无需也无法调整"
+        return 1
+    fi
+    [ ! -f "$SYSCTL_FILE" ] || CONFIG=$(cat "$SYSCTL_FILE")
+    ORIGINAL="$CONFIG"
+    LINES=$(bbr_conntrack_config)
+    if bbr_conntrack_applied "$CONFIG" "$LINES"; then
+        [ "$MODE" = auto ] || info "conntrack 参数已是推荐值，无需调整"
+        return 0
+    fi
+    KEYS=$(printf '%s\n' "$LINES" | awk '{print $1}')
+    CONFIG=$(printf '%s\n' "$CONFIG" | grep -vE '^[[:space:]]*net\.netfilter\.nf_conntrack_|^# ── conntrack' || true)
+    CONFIG=$(printf '%s\n\n%s\n%s\n' "$CONFIG" "$BBR_CONNTRACK_HEADING" "$LINES" | awk 'NF || prev { print } { prev = NF }')
+    if [ "$MODE" = auto ]; then
+        if ! OUTPUT=$(bbr_apply_sysctl "$CONFIG" preserve '' "$KEYS" "$KEYS" "$ORIGINAL" 2>&1); then
+            printf '%s\n' "$OUTPUT"
+            warn "conntrack 调整失败，转发连接多时可能丢包；可在 BBR 菜单「c」重试"
+            return 1
+        fi
+        bbr_conntrack_sync_persistence >/dev/null
+    else
+        bbr_apply_sysctl "$CONFIG" preserve '' "$KEYS" "$KEYS" "$ORIGINAL" || { error "conntrack 调整失败"; return 1; }
+        bbr_conntrack_sync_persistence
+    fi
+    info "conntrack 已调整：上限 $(bbr_config_value "$LINES" net.netfilter.nf_conntrack_max)，established $(bbr_config_value "$LINES" net.netfilter.nf_conntrack_tcp_timeout_established) 秒，time_wait $(bbr_config_value "$LINES" net.netfilter.nf_conntrack_tcp_timeout_time_wait) 秒 ✓"
+}
+
+bbr_conntrack_menu() {
+    local ANSWER
+    print_header "conntrack 调优"
+    echo -e "  ${DIM}防火墙、NAT、NFT / iptables 转发和 Docker 会为每条连接占用一个 conntrack 表项。${NC}"
+    echo -e "  ${DIM}表满后内核直接丢弃新连接（dmesg: nf_conntrack: table full, dropping packet），${NC}"
+    echo -e "  ${DIM}网卡和 CPU 看起来都正常。1GB 内存的新内核默认上限只有约 7680。${NC}"
+    echo ""
+    if bbr_conntrack_in_use; then
+        bbr_conntrack_status_line "确认后即可调整"
+    else
+        echo -e "  ${DIM}当前未加载 nf_conntrack：没有防火墙 / NAT / 转发时通常无需调整${NC}"
+    fi
+    echo ""
+    echo "  将写入（上限只升不降，超时只缩不延长）："
+    bbr_conntrack_config | sed 's/^/    /'
+    echo -e "  ${DIM}并开机预加载 nf_conntrack、哈希桶 = 上限 / 4；可用「还原 TCP 配置」恢复${NC}"
+    echo ""
+    read -rp "  确认应用？(Y/n，默认Y): " ANSWER
+    [ -n "$ANSWER" ] || ANSWER=y
+    echo "$ANSWER" | grep -qiE '^y(es)?$' || { warn "已取消"; return 0; }
+    bbr_conntrack_tune
+}
+
 # vm.swappiness 属于内存策略，不再写入网络调优配置（主脚本由 Swap 菜单管理）。
 bbr_generate_config() {
     local RMEM=$1 WMEM=$2 PROFILE_NAME="${3:-default}" ENABLE_FORWARD="${4:-0}"
@@ -1852,17 +1991,9 @@ EOF
         printf '%s\n' 'net.ipv4.ip_forward = 1' 'net.ipv6.conf.all.forwarding = 1'
     fi
 
-    if [ "$ENABLE_FORWARD" = 1 ] && [ "$PROFILE_NAME" = "relay" ]; then
-        local MEM_MB CONNTRACK_MAX
-        MEM_MB=$(bbr_physical_memory_mb)
-        CONNTRACK_MAX=$(bbr_conntrack_max_for_memory "$MEM_MB")
-        cat << EOF
-
-# ── conntrack（按物理内存分档）──
-net.netfilter.nf_conntrack_max = ${CONNTRACK_MAX}
-net.netfilter.nf_conntrack_tcp_timeout_established = 7200
-net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30
-EOF
+    if bbr_conntrack_wanted "$PROFILE_NAME" "$ENABLE_FORWARD"; then
+        printf '\n%s\n' "$BBR_CONNTRACK_HEADING"
+        bbr_conntrack_config
     fi
 }
 
@@ -1949,6 +2080,11 @@ bbr_confirm_apply() {
                 || echo -e "  内核转发     : ${BOLD}不修改${NC}"
             ;;
     esac
+    if bbr_conntrack_wanted "$PROFILE_NAME" "$ENABLE_FORWARD"; then
+        local CT_TARGET
+        CT_TARGET=$(bbr_conntrack_target)
+        echo -e "  conntrack    : ${BOLD}上限 $(bbr_conntrack_current 2>/dev/null || echo 未加载) → ${CT_TARGET}${NC}  ${DIM}(哈希桶 $(( CT_TARGET / 4 ))，established 超时 2 小时)${NC}"
+    fi
     echo -e "  ${YELLOW}──────────────────────────────────────────${NC}"
     echo ""
 
@@ -1969,7 +2105,7 @@ bbr_confirm_apply() {
     local CONFIG ORIGINAL_CONFIG=""
     [ ! -f "$SYSCTL_FILE" ] || ORIGINAL_CONFIG=$(cat "$SYSCTL_FILE")
     CONFIG=$(bbr_generate_config "$RMEM" "$WMEM" "$PROFILE_NAME" "$ENABLE_FORWARD" "$ORIGINAL_CONFIG") || return 1
-    [ "$ENABLE_FORWARD" != 1 ] \
+    ! bbr_conntrack_wanted "$PROFILE_NAME" "$ENABLE_FORWARD" \
         || ensure_conntrack_module \
         || warn "无法预加载 nf_conntrack，将按内核实际支持情况应用"
     bbr_apply_sysctl "$CONFIG" ask '' '' '' "$ORIGINAL_CONFIG" || {
@@ -2943,6 +3079,7 @@ bbr_menu() {
         menu_pair "2" "自动配置" "3" "手动配置"
         menu_pair "4" "限速设置" "5" "initcwnd 设置"
         menu_item "9" "TCP 增强（TFO / ECN / MTU）"
+        menu_item "c" "conntrack 调优  ${DIM}转发 / NAT 连接表${NC}"
         echo ""
         menu_group "维护"
         menu_pair "6" "备份 TCP 配置" "7" "还原 TCP 配置"
@@ -2950,7 +3087,7 @@ bbr_menu() {
         menu_pair "0" "返回主菜单" "00" "退出脚本" "$RED" "$RED"
         menu_div
         echo ""
-        menu_read CH '选择操作 [0-9]: ' || return 0
+        menu_read CH '选择操作 [0-9/c]: ' || return 0
 
         case "$CH" in
             1) bbr_smart_wizard ;;
@@ -2962,6 +3099,7 @@ bbr_menu() {
             7) bbr_restore_sysctl ;;
             8) bbr_diagnose ;;
             9) bbr_tcp_menu ;;
+            c|C) bbr_conntrack_menu ;;
             0) return ;;
             00) safe_clear; echo -e "${GREEN}已退出。${NC}"; exit 0 ;;
             *) warn "无效选项"; sleep 1; continue ;;
