@@ -904,8 +904,9 @@ EOF
     || { echo "BBR initcwnd kept the RA expires token" >&2; exit 1; }
 [[ "$(bbr_route_strip_cwnd 'default via 192.0.2.1 dev eth0 linkdown')" = 'default via 192.0.2.1 dev eth0' ]] \
     || { echo "BBR initcwnd kept the linkdown flag" >&2; exit 1; }
-awk 'p && /^CWND_HELPER_EOF$/{exit} /<< '\''CWND_HELPER_EOF'\''/{p=1; next} p{print}' "$ROOT/src/modules/bbr.sh" \
-    | grep -qF '$i == "expires"' || { echo "initcwnd boot helper keeps the RA expires token" >&2; exit 1; }
+# Here-string, not a pipe: grep -q exits on the first match and awk would die of SIGPIPE under pipefail.
+CWND_HELPER=$(awk 'p && /^CWND_HELPER_EOF$/{exit} /<< '\''CWND_HELPER_EOF'\''/{p=1; next} p{print}' "$ROOT/src/modules/bbr.sh")
+grep -qF '$i == "expires"' <<< "$CWND_HELPER" || { echo "initcwnd boot helper keeps the RA expires token" >&2; exit 1; }
 
 # Moving the limit to a new default NIC must remove this tool's rule from the old NIC.
 (
